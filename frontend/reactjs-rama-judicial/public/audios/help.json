@@ -1,0 +1,15 @@
+{
+  "metadata": {
+    "soundFile": "C:\\projetos-xertica\\avatar_lipsync\\r3f-lipsync-tutorial\\public\\audios\\help.ogg",
+    "duration": 1.25
+  },
+  "mouthCues": [
+    { "start": 0.00, "end": 0.15, "value": "X" },
+    { "start": 0.15, "end": 0.45, "value": "C" },
+    { "start": 0.45, "end": 0.52, "value": "B" },
+    { "start": 0.52, "end": 0.59, "value": "C" },
+    { "start": 0.59, "end": 0.67, "value": "A" },
+    { "start": 0.67, "end": 0.98, "value": "F" },
+    { "start": 0.98, "end": 1.25, "value": "X" }
+  ]
+}

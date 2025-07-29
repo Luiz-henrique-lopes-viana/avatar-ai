@@ -1,0 +1,30 @@
+{
+    "compilerOptions": {
+        "target": "ESNext", // Use latest JS features
+        "lib": [
+            "DOM",
+            "DOM.Iterable",
+            "ESNext"
+        ], // DOM + latest ECMAScript
+        "allowJs": true, // Allow JavaScript files
+        "skipLibCheck": true, // Skip type checking of declaration files
+        "esModuleInterop": true, // Easier import compatibility
+        "allowSyntheticDefaultImports": true, // Allow default imports from modules with no default export
+        "strict": true, // Enable all strict type-checking options
+        "forceConsistentCasingInFileNames": true, // Disallow filename casing mismatches
+        "module": "ESNext", // Modern module system
+        "moduleResolution": "Node", // Resolve modules like Node.js
+        "resolveJsonModule": true, // Allow importing `.json` files
+        "isolatedModules": true, // Ensures all files can be transpiled individually
+        "noEmit": true, // Don't output files (use Babel or ts-loader instead)
+        "jsx": "react-jsx" // Use new JSX transform (React 17+)
+    },
+    "include": [
+        "src",
+        "vite-env.d.ts"
+    ], // Include your source folder
+    "exclude": [
+        "node_modules",
+        "dist"
+    ] // Exclude build artifacts
+}
