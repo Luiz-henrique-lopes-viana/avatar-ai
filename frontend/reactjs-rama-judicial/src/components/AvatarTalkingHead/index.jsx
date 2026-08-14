@@ -5,25 +5,40 @@ const loadModules = async () => {
   return { TalkingHead };
 };
 
+// Avatar model resolution (in order of priority):
+// 1. VITE_AVATAR_URL  -> full URL to a .glb (local "/models/x.glb" or remote)
+// 2. VITE_AVATAR_ID   -> a Ready Player Me avatar id; the RPM url is built with
+//    the morph targets TalkingHead needs for lip-sync.
+// 3. fallback         -> the model bundled in /public/models.
+// To change the avatar's clothes/appearance: create an avatar at readyplayer.me,
+// then set VITE_AVATAR_ID (its id) in .env.local. Also set VITE_AVATAR_BODY "F"/"M".
+const RPM_PARAMS = "morphTargets=ARKit,Oculus Visemes&textureAtlas=1024&lod=0";
+const AVATAR_BODY = import.meta.env.VITE_AVATAR_BODY || "F";
+const AVATAR_URL =
+  import.meta.env.VITE_AVATAR_URL ||
+  (import.meta.env.VITE_AVATAR_ID
+    ? `https://models.readyplayer.me/${import.meta.env.VITE_AVATAR_ID}.glb?${RPM_PARAMS}`
+    : "/models/6806bf365a7750626bb8c233.glb");
+
 export const AvatarTalkingHead = ({ message, playAudio }) => {
   const avatarRef = useRef(null);
   const [headInstance, setHeadInstance] = useState(null);
 
   const renderAvatar = async () => {
-    const { TalkingHead } = await loadModules();
-
-    const head = new TalkingHead(avatarRef.current, {
-      ttsEndpoint: import.meta.env.VITE_TTS_ENDPOINT,
-      ttsApikey: import.meta.env.VITE_TTS_API_KEY,
-      lipsyncModules: ["es"],
-      cameraView: "upper",
-    });
-
     try {
+      const { TalkingHead } = await loadModules();
+
+      const head = new TalkingHead(avatarRef.current, {
+        ttsEndpoint: import.meta.env.VITE_TTS_ENDPOINT,
+        ttsApikey: import.meta.env.VITE_TTS_API_KEY,
+        lipsyncModules: ["es"],
+        cameraView: "upper",
+      });
+
       await head.showAvatar(
         {
-          url: "/models/6806bf365a7750626bb8c233.glb",
-          body: "F",
+          url: AVATAR_URL,
+          body: AVATAR_BODY,
           avatarMood: "neutral",
           ttsLang: "es-ES",
           ttsVoice: "es-ES-Standard-F",
@@ -40,7 +55,7 @@ export const AvatarTalkingHead = ({ message, playAudio }) => {
       head.playGesture("handup");
       setHeadInstance(head);
     } catch (error) {
-      console.error(error);
+      console.error("Failed to render avatar:", error);
     }
   };
 
@@ -55,7 +70,7 @@ export const AvatarTalkingHead = ({ message, playAudio }) => {
   }, [message, headInstance]);
 
   useEffect(() => {
-    if (!playAudio) {
+    if (headInstance && !playAudio) {
       headInstance.stopSpeaking();
     }
   }, [playAudio]);
