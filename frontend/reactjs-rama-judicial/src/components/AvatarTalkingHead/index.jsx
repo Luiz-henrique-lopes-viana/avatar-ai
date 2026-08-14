@@ -25,16 +25,23 @@ export const AvatarTalkingHead = ({ message, playAudio }) => {
   const avatarRef = useRef(null);
   const videoRef = useRef(null);
   const trackerRef = useRef(null);
+  const headRef = useRef(null);
   const [headInstance, setHeadInstance] = useState(null);
   const [camOn, setCamOn] = useState(false);
   const [camStatus, setCamStatus] = useState("");
+  const [camLoading, setCamLoading] = useState(false);
+  const [camSynced, setCamSynced] = useState(false);
+  const [camDebug, setCamDebug] = useState(null);
 
   const toggleCamera = async () => {
+    if (camLoading) return; // ignore clicks while starting
     if (camOn) {
       trackerRef.current?.stop();
       trackerRef.current = null;
       setCamOn(false);
       setCamStatus("");
+      setCamSynced(false);
+      setCamDebug(null);
       return;
     }
     if (!headInstance) {
@@ -43,25 +50,34 @@ export const AvatarTalkingHead = ({ message, playAudio }) => {
     }
     try {
       setCamOn(true);
+      setCamLoading(true);
+      setCamSynced(false);
+      setCamStatus("Carregando rastreamento...");
       trackerRef.current = await startHeadTracking({
         head: headInstance,
         video: videoRef.current,
         onStatus: setCamStatus,
+        onSynced: () => {
+          setCamLoading(false);
+          setCamSynced(true);
+        },
+        onDebug: setCamDebug,
       });
     } catch (err) {
       console.error("Head tracking failed:", err);
       setCamStatus("Erro ao acessar a câmera: " + (err?.message || err));
       setCamOn(false);
+      setCamLoading(false);
     }
   };
 
-  useEffect(() => {
-    return () => trackerRef.current?.stop();
-  }, []);
-
-  const renderAvatar = async () => {
+  const renderAvatar = async (isCancelled) => {
     try {
       const { TalkingHead } = await loadModules();
+      if (isCancelled()) return;
+
+      // Start from a clean container so a leftover canvas can never stack.
+      if (avatarRef.current) avatarRef.current.innerHTML = "";
 
       const head = new TalkingHead(avatarRef.current, {
         ttsEndpoint: import.meta.env.VITE_TTS_ENDPOINT,
@@ -69,6 +85,7 @@ export const AvatarTalkingHead = ({ message, playAudio }) => {
         lipsyncModules: ["es"],
         cameraView: "upper",
       });
+      headRef.current = head;
 
       await head.showAvatar(
         {
@@ -86,6 +103,12 @@ export const AvatarTalkingHead = ({ message, playAudio }) => {
           }
         }
       );
+      if (isCancelled()) {
+        try {
+          head.stop();
+        } catch {}
+        return;
+      }
       head.start();
       head.playGesture("handup");
       setHeadInstance(head);
@@ -95,7 +118,23 @@ export const AvatarTalkingHead = ({ message, playAudio }) => {
   };
 
   useEffect(() => {
-    renderAvatar();
+    // React StrictMode double-mounts in dev; without this the first mount
+    // would create an avatar instance the second one abandons, leaving two
+    // stacked canvases -> the tracker drives one while you see the other
+    // ("sometimes it follows, sometimes it doesn't"). The cancel flag makes
+    // the first (throwaway) mount bail before it creates a second instance.
+    let cancelled = false;
+    renderAvatar(() => cancelled);
+    return () => {
+      cancelled = true;
+      trackerRef.current?.stop();
+      trackerRef.current = null;
+      try {
+        headRef.current?.stop();
+      } catch {}
+      if (avatarRef.current) avatarRef.current.innerHTML = "";
+      headRef.current = null;
+    };
   }, []);
 
   useLayoutEffect(() => {
@@ -126,7 +165,10 @@ export const AvatarTalkingHead = ({ message, playAudio }) => {
       />
 
       <div style={styles.camPanel}>
-        <div style={styles.camRow} onClick={toggleCamera}>
+        <div
+          style={{ ...styles.camRow, cursor: camLoading ? "wait" : "pointer" }}
+          onClick={toggleCamera}
+        >
           <span
             style={{
               ...styles.switch,
@@ -141,11 +183,22 @@ export const AvatarTalkingHead = ({ message, playAudio }) => {
             />
           </span>
           <span style={styles.camLabel}>🎥 Copiar meus movimentos</span>
+          {camLoading && <span style={styles.spinner} />}
+          {camSynced && !camLoading && <span style={styles.dotOk} />}
         </div>
         <span style={styles.camHint}>
           {camStatus || (camOn ? "" : "Desativado — avatar no modo natural")}
         </span>
+        {camOn && camDebug && (
+          <span style={styles.camDebug}>
+            frames {camDebug.frames} · rosto {camDebug.hasFace ? "sim" : "não"} ·
+            corpo {camDebug.armsOk ? (camDebug.hasPose ? "sim" : "não") : "off"} ·
+            matriz {camDebug.matrix ? "ok" : camDebug.landmarks ? "fallback" : "—"}
+          </span>
+        )}
       </div>
+
+      <style>{"@keyframes spin{to{transform:rotate(360deg)}}"}</style>
     </div>
   );
 };
@@ -231,5 +284,27 @@ const styles = {
     fontSize: 12,
     opacity: 0.85,
     minHeight: 15,
+  },
+  camDebug: {
+    fontSize: 11,
+    opacity: 0.6,
+    fontFamily: "monospace",
+  },
+  spinner: {
+    width: 14,
+    height: 14,
+    borderRadius: "50%",
+    border: "2px solid rgba(255,255,255,0.35)",
+    borderTopColor: "#fff",
+    animation: "spin 0.8s linear infinite",
+    flexShrink: 0,
+  },
+  dotOk: {
+    width: 10,
+    height: 10,
+    borderRadius: "50%",
+    background: "#37d67a",
+    boxShadow: "0 0 6px #37d67a",
+    flexShrink: 0,
   },
 };
