@@ -24,6 +24,12 @@ const MOUTH_SMOOTHING = 0.45;
 // Amplify the detected opening a bit (jawOpen rarely reaches 1.0).
 const MOUTH_GAIN = 1.4;
 
+// ----- Blink tuning -----
+// Blinks are fast, so smooth lightly (higher = snappier) and amplify a little
+// so a real blink fully closes the avatar's eyes.
+const BLINK_SMOOTHING = 0.6;
+const BLINK_GAIN = 1.8;
+
 // ----- Arm tuning -----
 // How fast the arms follow (0..1). Lower = smoother/laggier.
 const ARM_SMOOTHING = 0.35;
@@ -151,6 +157,22 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
   let mouthTarget = 0; // latest detected opening (0..1)
   let mouthCur = 0; // smoothed value actually applied
 
+  // ---- Resolve eye-blink morph targets ----
+  const eyeMorphs = { eyeBlinkLeft: [], eyeBlinkRight: [] };
+  for (const m of head.morphs || []) {
+    for (const key of ["eyeBlinkLeft", "eyeBlinkRight"]) {
+      const idx = m.morphTargetDictionary?.[key];
+      if (idx !== undefined) {
+        eyeMorphs[key].push({ infl: m.morphTargetInfluences, idx });
+      }
+    }
+  }
+  const blinkOk = eyeMorphs.eyeBlinkLeft.length + eyeMorphs.eyeBlinkRight.length > 0;
+  let blinkTargetL = 0;
+  let blinkTargetR = 0;
+  let blinkCurL = 0;
+  let blinkCurR = 0;
+
   // Reusable math objects (avoid per-frame allocations).
   const mtx4 = new THREE.Matrix4();
   const pos = new THREE.Vector3();
@@ -264,6 +286,14 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
           fm.infl[fm.idx] = fm.key === "jawOpen" ? mouthCur : mouthCur * 0.6;
         }
       }
+      // Blink together with the user. Written every frame (including back to 0)
+      // so the eyes reopen; this overrides the avatar's idle auto-blink.
+      if (running && hasFace && blinkOk) {
+        blinkCurL += (blinkTargetL - blinkCurL) * BLINK_SMOOTHING;
+        blinkCurR += (blinkTargetR - blinkCurR) * BLINK_SMOOTHING;
+        for (const e of eyeMorphs.eyeBlinkLeft) e.infl[e.idx] = blinkCurL;
+        for (const e of eyeMorphs.eyeBlinkRight) e.infl[e.idx] = blinkCurR;
+      }
     } catch (err) {
       // Never let a tracking error freeze the avatar's rendering.
       if (!patchErrored) {
@@ -336,6 +366,10 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
         mouthTarget = jaw
           ? THREE.MathUtils.clamp(jaw.score * MOUTH_GAIN, 0, 1)
           : 0;
+        const bl = blends.find((c) => c.categoryName === "eyeBlinkLeft");
+        const br = blends.find((c) => c.categoryName === "eyeBlinkRight");
+        blinkTargetL = bl ? THREE.MathUtils.clamp(bl.score * BLINK_GAIN, 0, 1) : 0;
+        blinkTargetR = br ? THREE.MathUtils.clamp(br.score * BLINK_GAIN, 0, 1) : 0;
       }
 
       if (matrix) {
