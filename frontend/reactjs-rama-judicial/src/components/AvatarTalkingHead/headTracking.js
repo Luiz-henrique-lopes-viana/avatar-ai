@@ -18,13 +18,19 @@ const SMOOTHING = 0.5;
 // Amplify the detected rotation a little so small head turns read clearly.
 const GAIN = 1.3;
 
+// ----- Mouth tuning -----
+// How fast the mouth follows (0..1). Higher = snappier.
+const MOUTH_SMOOTHING = 0.45;
+// Amplify the detected opening a bit (jawOpen rarely reaches 1.0).
+const MOUTH_GAIN = 1.4;
+
 // ----- Arm tuning -----
 // How fast the arms follow (0..1). Lower = smoother/laggier.
 const ARM_SMOOTHING = 0.35;
 // Axis remap from MediaPipe world space -> avatar world space.
 // MediaPipe world: +x image-right, +y down, +z toward camera.
 // If an arm moves the wrong way on one axis, flip that sign.
-const AXIS = { x: -1, y: -1, z: 1 };
+const AXIS = { x: 1, y: -1, z: 1 };
 // MIRROR=false: same side (raise your right arm -> the avatar raises ITS right).
 // MIRROR=true:  mirror image (raise your right arm -> the arm facing you moves).
 const MIRROR = false;
@@ -83,6 +89,7 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
     runningMode: "VIDEO",
     numFaces: 1,
     outputFacialTransformationMatrixes: true,
+    outputFaceBlendshapes: true, // gives jawOpen etc. for mouth mimicry
   });
 
   // Body/arm model is OPTIONAL: if it fails, the head keeps working.
@@ -126,6 +133,23 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
     s.targetUp = null;
     s.targetFore = null;
   }
+
+  // ---- Resolve mouth morph targets (jawOpen / mouthOpen) ----
+  // We write these influences directly each frame, blended with whatever the
+  // lip-sync set (max wins), so opening your mouth works whether or not the
+  // avatar is speaking.
+  const mouthMorphs = [];
+  for (const m of head.morphs || []) {
+    for (const key of ["jawOpen", "mouthOpen"]) {
+      const idx = m.morphTargetDictionary?.[key];
+      if (idx !== undefined) {
+        mouthMorphs.push({ infl: m.morphTargetInfluences, idx, key });
+      }
+    }
+  }
+  const mouthOk = mouthMorphs.length > 0;
+  let mouthTarget = 0; // latest detected opening (0..1)
+  let mouthCur = 0; // smoothed value actually applied
 
   // Reusable math objects (avoid per-frame allocations).
   const mtx4 = new THREE.Matrix4();
@@ -231,6 +255,15 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
       if (running && hasPose && armsOk) {
         applyArms();
       }
+      // Drive the mouth from the webcam ONLY while the avatar isn't speaking
+      // (TTS lip-sync owns the mouth then). We WRITE the value every frame,
+      // including down to 0, so the mouth closes as you close yours.
+      if (running && hasFace && mouthOk && !head.isSpeaking) {
+        mouthCur += (mouthTarget - mouthCur) * MOUTH_SMOOTHING;
+        for (const fm of mouthMorphs) {
+          fm.infl[fm.idx] = fm.key === "jawOpen" ? mouthCur : mouthCur * 0.6;
+        }
+      }
     } catch (err) {
       // Never let a tracking error freeze the avatar's rendering.
       if (!patchErrored) {
@@ -295,6 +328,15 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
 
       const matrix = result?.facialTransformationMatrixes?.[0]?.data;
       const landmarks = result?.faceLandmarks?.[0];
+
+      // Mouth opening from blendshapes (independent of the head-pose matrix).
+      const blends = result?.faceBlendshapes?.[0]?.categories;
+      if (blends) {
+        const jaw = blends.find((c) => c.categoryName === "jawOpen");
+        mouthTarget = jaw
+          ? THREE.MathUtils.clamp(jaw.score * MOUTH_GAIN, 0, 1)
+          : 0;
+      }
 
       if (matrix) {
         hasFace = true;
