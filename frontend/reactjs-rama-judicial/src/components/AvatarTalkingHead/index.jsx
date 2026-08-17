@@ -193,6 +193,7 @@ export const AvatarTalkingHead = ({ message, playAudio }) => {
           <span style={styles.camDebug}>
             frames {camDebug.frames} · rosto {camDebug.hasFace ? "sim" : "não"} ·
             corpo {camDebug.armsOk ? (camDebug.hasPose ? "sim" : "não") : "off"} ·
+            mãos {camDebug.hasHands ? "sim" : "não"} ·
             matriz {camDebug.matrix ? "ok" : camDebug.landmarks ? "fallback" : "—"}
           </span>
         )}

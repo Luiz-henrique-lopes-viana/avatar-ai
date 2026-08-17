@@ -1,6 +1,7 @@
 import {
   FaceLandmarker,
   PoseLandmarker,
+  HandLandmarker,
   FilesetResolver,
 } from "@mediapipe/tasks-vision";
 import * as THREE from "three";
@@ -10,6 +11,7 @@ import * as THREE from "three";
 const WASM_PATH = "/mediapipe/wasm";
 const MODEL_PATH = "/mediapipe/face_landmarker.task";
 const POSE_MODEL = "/mediapipe/pose_landmarker_lite.task";
+const HAND_MODEL = "/mediapipe/hand_landmarker.task";
 
 // Head-rotation limits (radians) so the avatar never snaps to extreme angles.
 const LIMIT = { pitch: 0.55, yaw: 0.8, roll: 0.45 };
@@ -30,9 +32,57 @@ const MOUTH_GAIN = 1.4;
 const BLINK_SMOOTHING = 0.6;
 const BLINK_GAIN = 1.8;
 
+// ----- Finger tuning -----
+// How fast fingers follow (0..1).
+const FINGER_SMOOTHING = 0.5;
+// Max bend (radians) applied per phalanx at full curl, around the bone's local
+// X axis (the rig curls fingers on +X). A real fist in this rig reaches x~1.4
+// on phalanx 1, x~1.6 on phalanx 2 (from TalkingHead's own fist gesture), so
+// these need to be large or the hand only half-closes.
+const FINGER_MAX = { 1: 1.2, 2: 1.6, 3: 0.5 };
+// Scales the raw curl estimate; >1 makes a light bend read as a stronger curl.
+const FINGER_GAIN = 1.4;
+// Map MediaPipe handedness label -> avatar hand. Flip if hands come swapped.
+const HAND_SWAP = false;
+
+// ----- Thumb tuning -----
+// The thumb doesn't curl on a single axis like the fingers; it folds across the
+// palm. Instead of rotX we slerp the thumb bones from their rest pose toward the
+// rig's own folded-thumb rotation (from TalkingHead's fist gesture, left hand;
+// the right hand is the mirror). Amount is driven by how adducted the thumb is.
+const THUMB_CLOSED_EULER_L = {
+  1: new THREE.Euler(0.579, 0.228, 0.363, "XYZ"),
+  2: new THREE.Euler(-0.027, -0.04, -0.662, "XYZ"),
+  3: new THREE.Euler(0.0, 0.0, 0.0, "XYZ"),
+};
+// Thumb-tip -> pinky-knuckle distance (normalized by hand size) that maps to
+// fully open vs fully folded. Tune to your camera/hand if the thumb over/under-
+// reacts: raise CLOSED to fold sooner, lower OPEN to keep it out longer.
+const THUMB_OPEN_D = 1.1;
+const THUMB_CLOSED_D = 0.55;
+
+// Rig mirrors a left-hand pose to the right by negating the quaternion's x & w.
+function thumbClosedQuat(side, j) {
+  const q = new THREE.Quaternion().setFromEuler(THUMB_CLOSED_EULER_L[j]);
+  if (side === "Right") {
+    q.x *= -1;
+    q.w *= -1;
+  }
+  return q;
+}
+
 // ----- Arm tuning -----
 // How fast the arms follow (0..1). Lower = smoother/laggier.
 const ARM_SMOOTHING = 0.35;
+// Wrist follows a bit slower than the arm to hide hand-detection jitter.
+const WRIST_SMOOTHING = 0.25;
+// Ignore hand detections below this handedness confidence. At frame edges (hand
+// lowered/cut off) MediaPipe briefly mislabels or loses the hand; skipping those
+// stops the wrist from jumping.
+const HAND_MIN_CONF = 0.6;
+// Frames a hand may go unseen before the wrist relaxes straight along the
+// forearm. Bridges 1-2 frame dropouts without freezing a bent pose.
+const WRIST_RELAX_AFTER = 4;
 // Axis remap from MediaPipe world space -> avatar world space.
 // MediaPipe world: +x image-right, +y down, +z toward camera.
 // If an arm moves the wrong way on one axis, flip that sign.
@@ -103,6 +153,11 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
     numPoses: 1,
   });
 
+  // Hand/finger model is OPTIONAL too.
+  const handLandmarker = await makeLandmarker(HandLandmarker, vision, HAND_MODEL, {
+    numHands: 2,
+  });
+
   say("Pedindo acesso à câmera...");
   const stream = await navigator.mediaDevices.getUserMedia({
     video: { width: 640, height: 480, facingMode: "user" },
@@ -134,11 +189,22 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
     if (!s.up) continue;
     s.curUp = new THREE.Quaternion();
     s.curFore = new THREE.Quaternion();
+    s.curHand = new THREE.Quaternion();
     s.upDir = s.fore.position.clone().normalize(); // rest dir shoulder->elbow
     s.foreDir = s.hand.position.clone().normalize(); // rest dir elbow->wrist
+    // Rest dir wrist->middle-finger base, used to orient the hand (wrist) bone.
+    const midBone = bone(`${s.hand.name}Middle1`);
+    s.handDir = midBone ? midBone.position.clone().normalize() : null;
     s.targetUp = null;
     s.targetFore = null;
+    s.targetHand = null;
+    s.handSeen = false;
+    s.handMiss = 0;
   }
+  // Look up the arm side that owns each hand bone, so the hand model (which
+  // reports handedness as "Left"/"Right") can feed the matching wrist target.
+  const sideByHandName = {};
+  for (const s of sides) if (s.hand) sideByHandName[s.hand.name] = s;
 
   // ---- Resolve mouth morph targets (jawOpen / mouthOpen) ----
   // We write these influences directly each frame, blended with whatever the
@@ -173,6 +239,38 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
   let blinkCurL = 0;
   let blinkCurR = 0;
 
+  // ---- Resolve finger bones per hand ----
+  // Each hand has 5 fingers; we curl phalanges 1..3 around their local X axis
+  // (phalanx 4 is the fingertip, no child to animate). We snapshot each bone's
+  // REST rotation and, per frame, set rotation = rest * rotX(curl * max).
+  const FINGERS = ["Thumb", "Index", "Middle", "Ring", "Pinky"];
+  const hands = {
+    Left: { bones: [], curl: {}, target: {} },
+    Right: { bones: [], curl: {}, target: {} },
+  };
+  for (const side of ["Left", "Right"]) {
+    for (const finger of FINGERS) {
+      hands[side].curl[finger] = 0;
+      hands[side].target[finger] = 0;
+      for (const j of [1, 2, 3]) {
+        const b = bone(`${side}Hand${finger}${j}`);
+        if (b) {
+          hands[side].bones.push({
+            bone: b,
+            rest: b.quaternion.clone(),
+            finger,
+            max: FINGER_MAX[j],
+            // Thumb bones fold toward a pose instead of rotating around X.
+            closed: finger === "Thumb" ? thumbClosedQuat(side, j) : null,
+          });
+        }
+      }
+    }
+  }
+  const fingersOk =
+    !!handLandmarker && hands.Left.bones.length + hands.Right.bones.length > 0;
+  let hasHands = false;
+
   // Reusable math objects (avoid per-frame allocations).
   const mtx4 = new THREE.Matrix4();
   const pos = new THREE.Vector3();
@@ -184,6 +282,8 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
   const _pInv = new THREE.Quaternion();
   const _r = new THREE.Quaternion();
   const _upW = new THREE.Quaternion();
+  const _fq = new THREE.Quaternion();
+  const _xAxis = new THREE.Vector3(1, 0, 0);
 
   let running = true;
   let lastVideoTime = -1;
@@ -231,7 +331,7 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
   // to frame ("bugado"). We handle that case explicitly with a STABLE, chosen
   // perpendicular so the flip is deterministic and smooth.
   // Returns the bone's resulting world quaternion (parentWorld * newLocal).
-  function driveBone(b, restDir, targetDir, cur) {
+  function driveBone(b, restDir, targetDir, cur, smoothing = ARM_SMOOTHING) {
     b.parent.getWorldQuaternion(_pW);
     _pInv.copy(_pW).invert();
     _dir.copy(targetDir).applyQuaternion(_pInv); // target in parent-local space
@@ -248,7 +348,7 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
     } else {
       _r.setFromUnitVectors(restDir, _dir);
     }
-    cur.slerp(_r, ARM_SMOOTHING);
+    cur.slerp(_r, smoothing);
     b.quaternion.copy(cur);
     return _upW.copy(_pW).multiply(cur);
   }
@@ -262,6 +362,61 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
       // for this side's chain before driving it.
       s.up.updateWorldMatrix(true, true);
       driveBone(s.fore, s.foreDir, s.targetFore, s.curFore);
+      // Wrist: orient the hand bone toward where the user's hand points. Needs
+      // the forearm's new pose first, and a target from the hand model.
+      if (s.targetHand && s.handDir) {
+        s.fore.updateWorldMatrix(true, true);
+        driveBone(s.hand, s.handDir, s.targetHand, s.curHand, WRIST_SMOOTHING);
+      }
+    }
+  }
+
+  // Estimate how curled a finger is (0=straight, 1=fully closed) from its four
+  // hand landmarks a->b->c->d. We measure how much the finger bends at each
+  // joint: aligned segments (dot ~1) mean straight, folded segments mean curled.
+  const _v1 = new THREE.Vector3();
+  const _v2 = new THREE.Vector3();
+  const _v3 = new THREE.Vector3();
+  function fingerCurl(a, b, c, d) {
+    _v1.set(b.x - a.x, b.y - a.y, (b.z || 0) - (a.z || 0)).normalize();
+    _v2.set(c.x - b.x, c.y - b.y, (c.z || 0) - (b.z || 0)).normalize();
+    _v3.set(d.x - c.x, d.y - c.y, (d.z || 0) - (c.z || 0)).normalize();
+    const straight = (_v1.dot(_v2) + _v2.dot(_v3)) / 2; // ~1 straight, lower curled
+    return THREE.MathUtils.clamp((1 - straight) * FINGER_GAIN, 0, 1);
+  }
+
+  // Thumb "closed" amount (0=out, 1=folded across palm). The thumb barely bends
+  // along its own length when it closes; instead its tip moves toward the palm.
+  // We measure the thumb-tip -> pinky-knuckle distance, normalized by hand size
+  // so it's independent of how far the hand is from the camera.
+  const _d3 = (a, b) =>
+    Math.hypot(a.x - b.x, a.y - b.y, (a.z || 0) - (b.z || 0));
+  function thumbClose(lm) {
+    const handSize = _d3(lm[0], lm[9]) || 1; // wrist -> middle knuckle
+    const d = _d3(lm[4], lm[17]) / handSize; // thumb tip -> pinky knuckle
+    return THREE.MathUtils.clamp(
+      (THUMB_OPEN_D - d) / (THUMB_OPEN_D - THUMB_CLOSED_D),
+      0,
+      1
+    );
+  }
+
+  function applyFingers() {
+    for (const side of ["Left", "Right"]) {
+      const h = hands[side];
+      for (const finger of FINGERS) {
+        h.curl[finger] +=
+          (h.target[finger] - h.curl[finger]) * FINGER_SMOOTHING;
+      }
+      for (const fb of h.bones) {
+        if (fb.closed) {
+          // Thumb: interpolate rest -> folded pose by how closed the thumb is.
+          fb.bone.quaternion.copy(fb.rest).slerp(fb.closed, h.curl.Thumb);
+        } else {
+          _fq.setFromAxisAngle(_xAxis, h.curl[fb.finger] * fb.max);
+          fb.bone.quaternion.copy(fb.rest).multiply(_fq);
+        }
+      }
     }
   }
 
@@ -276,6 +431,11 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
       }
       if (running && hasPose && armsOk) {
         applyArms();
+      }
+      if (running && fingersOk) {
+        // Always run while tracking: when a hand isn't seen its curl target is
+        // 0, so fingers smoothly relax open instead of freezing.
+        applyFingers();
       }
       // Drive the mouth from the webcam ONLY while the avatar isn't speaking
       // (TTS lip-sync owns the mouth then). We WRITE the value every frame,
@@ -417,6 +577,75 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
         }
       }
 
+      // ---- Hands / fingers (odd frames to interleave with the pose model) ----
+      if (fingersOk && framesProcessed % 2 === 1) {
+        let hr = null;
+        try {
+          hr = handLandmarker.detectForVideo(video, performance.now());
+        } catch (err) {
+          console.error("hand detectForVideo falhou:", err);
+        }
+        const handsLm = hr?.landmarks;
+        const handed = hr?.handednesses;
+        hands.Left.seen = false;
+        hands.Right.seen = false;
+        for (const s of sides) s.handSeen = false;
+        if (handsLm && handsLm.length) {
+          hasHands = true;
+          markSynced();
+          for (let i = 0; i < handsLm.length; i++) {
+            const lm = handsLm[i];
+            const hcat = handed?.[i]?.[0];
+            let label = hcat?.categoryName || "Right";
+            // Low-confidence detections (hand at frame edge / half out) flip
+            // labels and jump; skip them so fingers + wrist relax instead.
+            if ((hcat?.score ?? 1) < HAND_MIN_CONF) continue;
+            if (HAND_SWAP) label = label === "Left" ? "Right" : "Left";
+            const h = hands[label];
+            if (!h) continue;
+            h.seen = true;
+            h.target.Thumb = thumbClose(lm);
+            h.target.Index = fingerCurl(lm[5], lm[6], lm[7], lm[8]);
+            h.target.Middle = fingerCurl(lm[9], lm[10], lm[11], lm[12]);
+            h.target.Ring = fingerCurl(lm[13], lm[14], lm[15], lm[16]);
+            h.target.Pinky = fingerCurl(lm[17], lm[18], lm[19], lm[20]);
+
+            // Wrist orientation: point the hand bone the way the real hand
+            // points (wrist landmark 0 -> middle-finger MCP landmark 9), using
+            // the metric worldLandmarks so it shares the pose model's axes.
+            const sw = sideByHandName[label + "Hand"];
+            if (sw && sw.handDir) {
+              const whl = hr.worldLandmarks?.[i];
+              if (whl && whl[0] && whl[9]) {
+                sw.targetHand = mpDir(whl[0], whl[9]);
+                sw.handSeen = true;
+              }
+            }
+          }
+        } else {
+          hasHands = false;
+        }
+        // Any hand not seen this frame relaxes back to open (curl target 0).
+        for (const side of ["Left", "Right"]) {
+          if (!hands[side].seen) {
+            for (const f of FINGERS) hands[side].target[f] = 0;
+          }
+        }
+        // Wrist: hold through brief dropouts, then straighten along the forearm
+        // once the hand has been gone for a few frames (avoids a frozen bent
+        // pose / jitter when you lower your arm out of the camera's view).
+        for (const s of sides) {
+          if (s.handSeen) {
+            s.handMiss = 0;
+          } else {
+            s.handMiss++;
+            if (s.handMiss > WRIST_RELAX_AFTER && s.handDir) {
+              s.targetHand = s.targetFore;
+            }
+          }
+        }
+      }
+
       // Live diagnostics so we can see, on the user's real webcam, exactly
       // where tracking stalls (frames flowing? face found? matrix vs fallback?).
       if (onDebug && framesProcessed % 15 === 0) {
@@ -424,6 +653,7 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
           frames: framesProcessed,
           hasFace,
           hasPose,
+          hasHands,
           armsOk,
           matrix: !!matrix,
           landmarks: !!landmarks,
@@ -449,6 +679,9 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
       } catch {}
       try {
         poseLandmarker?.close();
+      } catch {}
+      try {
+        handLandmarker?.close();
       } catch {}
       if (video) video.srcObject = null;
       say("");
