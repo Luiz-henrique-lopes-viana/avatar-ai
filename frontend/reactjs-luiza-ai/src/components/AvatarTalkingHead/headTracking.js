@@ -16,9 +16,16 @@ const HAND_MODEL = "/mediapipe/hand_landmarker.task";
 // Head-rotation limits (radians) so the avatar never snaps to extreme angles.
 const LIMIT = { pitch: 0.55, yaw: 0.8, roll: 0.45 };
 // How fast the avatar head follows the webcam (0..1). Lower = smoother/laggier.
-const SMOOTHING = 0.5;
+// 0.35 damps the frame-to-frame tremor of the raw head pose without much lag.
+const SMOOTHING = 0.35;
 // Amplify the detected rotation a little so small head turns read clearly.
 const GAIN = 1.3;
+
+// Cap how many times per second we run the (heavy) landmark models. The avatar
+// still renders and eases toward its targets EVERY frame, so motion stays smooth
+// while weaker machines simply detect less often. Lower = lighter (and laggier).
+const DETECT_FPS = 30;
+const DETECT_INTERVAL = 1000 / DETECT_FPS;
 
 // ----- Graceful release (turning the camera OFF) -----
 // When tracking stops we don't cut the override in a single frame (that snaps
@@ -306,6 +313,7 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
   let releasing = false; // easing bones back to rest after stop()
   let releaseFrames = 0;
   let lastVideoTime = -1;
+  let lastDetect = -1; // wall-clock of the last detection, for the DETECT_FPS cap
   let hasFace = false;
   let hasPose = false;
   let matrixWarned = false;
@@ -560,7 +568,13 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
 
   function loop() {
     if (!running) return;
-    if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+    const nowMs = performance.now();
+    if (
+      video.readyState >= 2 &&
+      video.currentTime !== lastVideoTime &&
+      nowMs - lastDetect >= DETECT_INTERVAL
+    ) {
+      lastDetect = nowMs;
       lastVideoTime = video.currentTime;
       framesProcessed++;
       let result;

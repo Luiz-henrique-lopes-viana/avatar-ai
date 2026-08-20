@@ -22,6 +22,9 @@ const loadModules = async () => {
 // 3. fallback         -> the model bundled in /public/models.
 // To change the avatar's clothes/appearance: create an avatar at readyplayer.me,
 // then set VITE_AVATAR_ID (its id) in .env.local. Also set VITE_AVATAR_BODY "F"/"M".
+// Imagem usada no fundo quando o modo "Imagem" é escolhido (em vez do desfoque).
+const WEBCAM_BG_IMAGE = "/assets/3d-neon-lights-background.jpg";
+
 const RPM_PARAMS = "morphTargets=ARKit,Oculus Visemes&textureAtlas=1024&lod=0";
 const AVATAR_BODY = import.meta.env.VITE_AVATAR_BODY || "F";
 const AVATAR_URL =
@@ -45,6 +48,9 @@ export const AvatarTalkingHead = forwardRef(({ message, playAudio }, ref) => {
   const [camStatus, setCamStatus] = useState("");
   const [camLoading, setCamLoading] = useState(false);
   const [camDebug, setCamDebug] = useState(null);
+  // Controle do fundo da webcam (regulável ao vivo pelo painel).
+  const [bgMode, setBgMode] = useState("blur"); // "blur" | "image"
+  const [blurPx, setBlurPx] = useState(12);
 
   const toggleCamera = async () => {
     if (camLoading) return; // ignore clicks while starting
@@ -75,6 +81,9 @@ export const AvatarTalkingHead = forwardRef(({ message, playAudio }, ref) => {
         bgTrackerRef.current = await startWebcamBackground({
           video: videoRef.current,
           canvas: canvasRef.current,
+          blur: blurPx,
+          mode: bgMode,
+          imageUrl: WEBCAM_BG_IMAGE,
         });
       } catch (bgErr) {
         console.warn("Fundo da webcam indisponível:", bgErr?.message || bgErr);
@@ -297,6 +306,55 @@ export const AvatarTalkingHead = forwardRef(({ message, playAudio }, ref) => {
           )}
         </div>
 
+        {camOn && (
+          <div style={styles.bgControls}>
+            <div style={styles.bgModeRow}>
+              {[
+                ["blur", "Desfoque"],
+                ["image", "Imagem"],
+              ].map(([mode, label]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => {
+                    setBgMode(mode);
+                    bgTrackerRef.current?.setMode(mode);
+                  }}
+                  style={{
+                    ...styles.bgModeBtn,
+                    background:
+                      bgMode === mode
+                        ? "linear-gradient(135deg,#248a52,#37d67a)"
+                        : "rgba(255,255,255,0.10)",
+                    opacity: bgMode === mode ? 1 : 0.75,
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {bgMode === "blur" && (
+              <div style={styles.blurRow}>
+                <span style={styles.blurLabel}>Desfoque</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={30}
+                  step={1}
+                  value={blurPx}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    setBlurPx(v);
+                    bgTrackerRef.current?.setBlur(v);
+                  }}
+                  style={styles.blurSlider}
+                />
+                <span style={styles.blurValue}>{blurPx}</span>
+              </div>
+            )}
+          </div>
+        )}
+
         {camOn && camDebug && (
           <span style={styles.camDebug}>
             frames {camDebug.frames} · rosto {camDebug.hasFace ? "sim" : "não"} ·
@@ -336,8 +394,11 @@ const styles = {
     position: "absolute",
     bottom: 20,
     left: 20,
-    width: 160,
-    height: 120,
+    // Tamanho da prévia. O último valor do clamp é o TETO no desktop (o que
+    // aparece na sua gravação de tela) — aumente-o para uma prévia maior. O
+    // primeiro é o piso no celular. A altura acompanha na proporção 4:3.
+    width: "clamp(240px, 42vw, 520px)",
+    aspectRatio: "4 / 3",
     objectFit: "cover",
     borderRadius: 10,
     border: "2px solid rgba(255,255,255,0.6)",
@@ -427,6 +488,50 @@ const styles = {
     fontFamily: "monospace",
     borderTop: "1px solid rgba(255,255,255,0.1)",
     paddingTop: 8,
+  },
+  bgControls: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+    borderTop: "1px solid rgba(255,255,255,0.1)",
+    paddingTop: 10,
+  },
+  bgModeRow: {
+    display: "flex",
+    gap: 6,
+  },
+  bgModeBtn: {
+    flex: 1,
+    padding: "6px 0",
+    fontSize: 12,
+    fontWeight: 700,
+    color: "white",
+    border: "none",
+    borderRadius: 8,
+    cursor: "pointer",
+    transition: "background 0.2s ease, opacity 0.2s ease",
+  },
+  blurRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+  },
+  blurLabel: {
+    fontSize: 11.5,
+    opacity: 0.7,
+    flexShrink: 0,
+  },
+  blurSlider: {
+    flex: 1,
+    accentColor: "#37d67a",
+    cursor: "pointer",
+  },
+  blurValue: {
+    fontSize: 11.5,
+    opacity: 0.7,
+    width: 18,
+    textAlign: "right",
+    fontVariantNumeric: "tabular-nums",
   },
   spinner: {
     width: 20,
