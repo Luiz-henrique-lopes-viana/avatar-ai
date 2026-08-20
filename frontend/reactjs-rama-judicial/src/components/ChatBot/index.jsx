@@ -269,36 +269,41 @@ export const ChatBot = () => {
 
   return (
     <div>
-      <div className="fixed bottom-5 right-5 w-[300px] h-[80vh] max-h-[500px] z-[1000] overflow-hidden shadow-lg bg-black/80 rounded-2xl flex flex-col backdrop-blur-md">
-        <div className="flex items-center p-2.5 bg-black/20 text-white gap-2.5">
-          <div
-            className="rounded-full overflow-hidden border-[2px] border-white/25"
-            style={{
-              width: "50px",
-            }}
-          >
-            <img
-              src="/textures/avatar3x4.png"
-              alt="Avatar"
-              className="w-full h-full object-cover"
-            />
+      <div className="fixed bottom-5 right-5 w-[340px] h-[82vh] max-h-[540px] z-[1000] overflow-hidden rounded-2xl flex flex-col bg-slate-900/80 backdrop-blur-xl border border-white/10 shadow-[0_20px_60px_-10px_rgba(2,32,71,0.75)]">
+        <div className="flex items-center gap-3 px-4 py-3 bg-gradient-to-r from-[#1e3a8a] via-[#2563eb] to-[#0ea5e9] text-white">
+          <div className="relative shrink-0">
+            <div className="w-12 h-12 rounded-full overflow-hidden ring-2 ring-white/70 shadow-md">
+              <img
+                src="/textures/avatar3x4.png"
+                alt="Avatar"
+                className="w-full h-full object-cover"
+              />
+            </div>
+            <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-green-400 border-2 border-[#1e3a8a]" />
           </div>
-          <div className="w-full flex flex-col gap-1">
-            <p className="text-lg font-bold font-sans">Luiza AI</p>
+          <div className="flex-1 min-w-0 flex flex-col gap-1.5">
+            <div className="flex items-baseline gap-2">
+              <p className="text-base font-bold leading-none tracking-tight font-sans">
+                Luiza AI
+              </p>
+              <span className="text-[11px] text-white/80 leading-none">
+                Assistente virtual
+              </span>
+            </div>
             <button
               onClick={toggleConversa}
               disabled={modelLoading}
               className={clsx(
-                "text-xs px-2 py-1 rounded font-medium transition-colors self-start flex items-center gap-1.5 disabled:opacity-70 disabled:cursor-wait",
+                "text-xs px-2.5 py-1 rounded-full font-semibold transition-all self-start flex items-center gap-1.5 shadow-sm disabled:opacity-70 disabled:cursor-wait",
                 conversaOn
-                  ? "bg-[#248a52] hover:bg-[#1d7745] text-white"
-                  : "bg-gray-600 hover:bg-gray-700 text-white"
+                  ? "bg-white text-[#1d4ed8] hover:bg-white/90"
+                  : "bg-white/15 text-white hover:bg-white/25 backdrop-blur"
               )}
             >
               <span
                 className={clsx(
                   "inline-block w-2 h-2 rounded-full",
-                  conversaOn ? "bg-green-300" : "bg-white/40"
+                  conversaOn ? "bg-green-500 animate-pulse" : "bg-white/50"
                 )}
               />
               {modelLoading
@@ -308,20 +313,20 @@ export const ChatBot = () => {
                 : "🔊 Ativar voz"}
             </button>
             {modelLoading && (
-              <div className="w-full h-1 bg-white/20 rounded overflow-hidden">
+              <div className="w-full h-1 bg-white/25 rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-green-400 transition-all"
+                  className="h-full bg-white transition-all"
                   style={{ width: `${Math.round(modelProgress * 100)}%` }}
                 />
               </div>
             )}
             {modelLoading && modelStatus && (
-              <span className="text-[10px] text-white/60 leading-tight truncate">
+              <span className="text-[10px] text-white/70 leading-tight truncate">
                 {modelStatus}
               </span>
             )}
             {aiError && (
-              <span className="text-[10px] text-red-300 leading-tight">
+              <span className="text-[10px] text-red-50 bg-red-500/40 rounded px-1.5 py-0.5 leading-tight">
                 {aiError}
               </span>
             )}
@@ -336,17 +341,24 @@ export const ChatBot = () => {
             scrollbarColor: "transparent transparent",
           }}
         >
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-2.5">
             {chatWindow.map((message, index) => (
               <div
                 key={index}
-                className={`text-sm leading-snug font-sans rounded-lg px-3 py-1.5 ${
+                className={`max-w-[85%] text-sm leading-snug font-sans rounded-2xl px-3.5 py-2 shadow-sm ${
                   message.sender === "user"
-                    ? "bg-gradient-to-r from-[#83c5d2] to-[#1e90b0] text-white text-right"
-                    : "bg-white/30 text-white/80"
+                    ? "self-end bg-gradient-to-br from-[#3b82f6] to-[#2563eb] text-white rounded-br-sm"
+                    : "self-start bg-white/10 text-white/90 border border-white/10 rounded-bl-sm"
                 }`}
               >
-                <p className="font-semibold text-xs">{message.sender_name}</p>
+                <p
+                  className={clsx(
+                    "font-semibold text-[11px] mb-0.5",
+                    message.sender === "user" ? "text-white/80" : "text-[#7dd3fc]"
+                  )}
+                >
+                  {message.sender_name}
+                </p>
                 <p>{message.text}</p>
                 {message.sender === "bot" && index !== 0 && (
                   <div className="flex flex-col gap-2 mt-2">
@@ -427,17 +439,18 @@ export const ChatBot = () => {
               </div>
             ))}
             {(isLoadingChat || isThinking) && (
-              <div>
-                <PulseLoader color="#fff" />
+              <div className="self-start bg-white/10 border border-white/10 rounded-2xl rounded-bl-sm px-3.5 py-2.5">
+                <PulseLoader color="#60a5fa" size={8} />
               </div>
             )}
           </div>
         </div>
 
-        <div className="flex items-center px-3 pt-3 bg-black/30">
+        <div className="flex items-end gap-2 px-3 py-3 bg-black/40 border-t border-white/10">
           <textarea
             ref={inputRef}
-            className="flex-1 bg-transparent border-none outline-none text-white/70 text-sm font-sans p-1 resize-none"
+            rows={1}
+            className="flex-1 bg-white/10 rounded-xl border border-white/10 focus:border-[#3b82f6] outline-none text-white/90 placeholder-white/40 text-sm font-sans px-3 py-2 resize-none max-h-24 transition-colors"
             placeholder={
               conversaOn && !modelReady
                 ? "Carregando a IA..."
@@ -447,41 +460,42 @@ export const ChatBot = () => {
           ></textarea>
           <button
             onClick={handleSendMessage}
-            className="ml-2 bg-[#248a52] hover:bg-[#1d7745] text-white text-sm p-2 px-3 rounded-lg transition-colors disabled:bg-gray-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="shrink-0 bg-gradient-to-br from-[#3b82f6] to-[#2563eb] hover:from-[#2563eb] hover:to-[#1d4ed8] text-white p-2.5 rounded-xl transition-all shadow-md disabled:from-gray-500 disabled:to-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={isLoadingChat || isThinking || (conversaOn && !modelReady)}
+            aria-label="Enviar mensagem"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              className="w-5 h-5"
+            >
+              <path d="M3.4 20.4l17.45-7.48a1 1 0 000-1.84L3.4 3.6a.993.993 0 00-1.39.91L2 9.12c0 .5.37.93.87.99L17 12 2.87 13.88c-.5.07-.87.5-.87 1l.01 4.61c0 .71.73 1.2 1.39.91z" />
+            </svg>
+          </button>
+          <button
+            onClick={() => {
+              if (isRecording) {
+                stopRecording();
+              } else {
+                startRecording();
+              }
+            }}
+            className={clsx(
+              "shrink-0 p-2.5 rounded-xl transition-all shadow-md flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed",
+              isRecording
+                ? "bg-red-600 hover:bg-red-700 animate-pulse"
+                : "bg-white/10 hover:bg-white/20 border border-white/10"
+            )}
+            aria-label={isRecording ? "Parar gravação" : "Iniciar gravação"}
             disabled={isLoadingChat || isThinking || (conversaOn && !modelReady)}
           >
-            Enviar
+            <img src={"/assets/mic.svg"} alt="Microfone" className="w-5 h-5" />
           </button>
-          <div className="flex flex-col items-center ml-2">
-            <button
-              onClick={() => {
-                if (isRecording) {
-                  stopRecording();
-                } else {
-                  startRecording();
-                }
-              }}
-              className={clsx(
-                "p-2 bg-[#248a52] hover:bg-[#1d7745] rounded-lg transition-colors flex items-center justify-center disabled:bg-gray-500 disabled:opacity-50 disabled:cursor-not-allowed",
-                isRecording && "bg-red-600 hover:bg-red-700"
-              )}
-              aria-label={isRecording ? "Parar gravação" : "Iniciar gravação"}
-              disabled={isLoadingChat || isThinking || (conversaOn && !modelReady)}
-            >
-              <div>
-                <img
-                  src={"/assets/mic.svg"}
-                  alt="Microfone"
-                  className="w-5 h-5"
-                  style={{ width: "31px" }}
-                />
-              </div>
-            </button>
-          </div>
         </div>
         {isRecording && (
           <div className="flex w-full justify-end mb-1 pr-4">
-            <span className=" text-xs text-gray-300  animate-pulse  text-right">
+            <span className="text-xs text-sky-300 animate-pulse text-right">
               Gravando mensagem...
             </span>
           </div>

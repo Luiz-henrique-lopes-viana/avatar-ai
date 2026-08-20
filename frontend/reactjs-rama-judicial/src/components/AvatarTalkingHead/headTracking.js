@@ -20,6 +20,14 @@ const SMOOTHING = 0.5;
 // Amplify the detected rotation a little so small head turns read clearly.
 const GAIN = 1.3;
 
+// ----- Graceful release (turning the camera OFF) -----
+// When tracking stops we don't cut the override in a single frame (that snaps
+// the avatar straight to its idle pose). Instead we spend a short window easing
+// every bone we drove back toward its rest pose, then hand control back to
+// TalkingHead. Lower SMOOTHING = softer/slower ease; FRAMES caps the window.
+const RELEASE_SMOOTHING = 0.1;
+const RELEASE_FRAMES = 42; // ~0.7s at 60fps
+
 // ----- Mouth tuning -----
 // How fast the mouth follows (0..1). Higher = snappier.
 const MOUTH_SMOOTHING = 0.45;
@@ -137,6 +145,9 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
   if (!head?.objectHead) {
     throw new Error("O avatar ainda não terminou de carregar.");
   }
+  // Rest pose of the head bone, captured before we start overriding it. On stop
+  // we ease back to this so the return to "natural" is smooth, not a snap.
+  const restHead = head.objectHead.quaternion.clone();
 
   say("Carregando modelo de rastreamento...");
   const vision = await FilesetResolver.forVisionTasks(WASM_PATH);
@@ -190,6 +201,11 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
     s.curUp = new THREE.Quaternion();
     s.curFore = new THREE.Quaternion();
     s.curHand = new THREE.Quaternion();
+    // Rest rotations, captured before tracking drives them, for the smooth
+    // release when the camera is turned off.
+    s.restUp = s.up.quaternion.clone();
+    s.restFore = s.fore.quaternion.clone();
+    s.restHand = s.hand.quaternion.clone();
     s.upDir = s.fore.position.clone().normalize(); // rest dir shoulder->elbow
     s.foreDir = s.hand.position.clone().normalize(); // rest dir elbow->wrist
     // Rest dir wrist->middle-finger base, used to orient the hand (wrist) bone.
@@ -285,7 +301,10 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
   const _fq = new THREE.Quaternion();
   const _xAxis = new THREE.Vector3(1, 0, 0);
 
-  let running = true;
+  let running = true; // gates the webcam detection loop (freezes targets on stop)
+  let active = true; // gates the render override (stays on through the release)
+  let releasing = false; // easing bones back to rest after stop()
+  let releaseFrames = 0;
   let lastVideoTime = -1;
   let hasFace = false;
   let hasPose = false;
@@ -426,33 +445,70 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
   const originalRender = head.render.bind(head);
   head.render = function patchedRender() {
     try {
-      if (running && hasFace && head.objectHead) {
-        head.objectHead.quaternion.slerp(targetQuat, SMOOTHING);
-      }
-      if (running && hasPose && armsOk) {
-        applyArms();
-      }
-      if (running && fingersOk) {
-        // Always run while tracking: when a hand isn't seen its curl target is
-        // 0, so fingers smoothly relax open instead of freezing.
-        applyFingers();
-      }
-      // Drive the mouth from the webcam ONLY while the avatar isn't speaking
-      // (TTS lip-sync owns the mouth then). We WRITE the value every frame,
-      // including down to 0, so the mouth closes as you close yours.
-      if (running && hasFace && mouthOk && !head.isSpeaking) {
-        mouthCur += (mouthTarget - mouthCur) * MOUTH_SMOOTHING;
-        for (const fm of mouthMorphs) {
-          fm.infl[fm.idx] = fm.key === "jawOpen" ? mouthCur : mouthCur * 0.6;
+      if (active && releasing) {
+        // Camera was turned off: ease every bone we drove back to its rest pose,
+        // then hand control back to TalkingHead. This replaces the hard snap you
+        // got from cutting the override in a single frame.
+        if (head.objectHead) {
+          head.objectHead.quaternion.slerp(restHead, RELEASE_SMOOTHING);
         }
-      }
-      // Blink together with the user. Written every frame (including back to 0)
-      // so the eyes reopen; this overrides the avatar's idle auto-blink.
-      if (running && hasFace && blinkOk) {
-        blinkCurL += (blinkTargetL - blinkCurL) * BLINK_SMOOTHING;
-        blinkCurR += (blinkTargetR - blinkCurR) * BLINK_SMOOTHING;
-        for (const e of eyeMorphs.eyeBlinkLeft) e.infl[e.idx] = blinkCurL;
-        for (const e of eyeMorphs.eyeBlinkRight) e.infl[e.idx] = blinkCurR;
+        if (armsOk) {
+          for (const s of sides) {
+            if (!s.up) continue;
+            s.up.quaternion.slerp(s.restUp, RELEASE_SMOOTHING);
+            s.fore.quaternion.slerp(s.restFore, RELEASE_SMOOTHING);
+            s.hand.quaternion.slerp(s.restHand, RELEASE_SMOOTHING);
+          }
+        }
+        if (fingersOk) {
+          for (const side of ["Left", "Right"]) {
+            for (const fb of hands[side].bones) {
+              fb.bone.quaternion.slerp(fb.rest, RELEASE_SMOOTHING);
+            }
+          }
+        }
+        if (mouthOk) {
+          mouthCur += (0 - mouthCur) * MOUTH_SMOOTHING;
+          for (const fm of mouthMorphs) {
+            fm.infl[fm.idx] = fm.key === "jawOpen" ? mouthCur : mouthCur * 0.6;
+          }
+        }
+        if (blinkOk) {
+          blinkCurL += (0 - blinkCurL) * BLINK_SMOOTHING;
+          blinkCurR += (0 - blinkCurR) * BLINK_SMOOTHING;
+          for (const e of eyeMorphs.eyeBlinkLeft) e.infl[e.idx] = blinkCurL;
+          for (const e of eyeMorphs.eyeBlinkRight) e.infl[e.idx] = blinkCurR;
+        }
+        if (++releaseFrames >= RELEASE_FRAMES) finish();
+      } else if (active) {
+        if (hasFace && head.objectHead) {
+          head.objectHead.quaternion.slerp(targetQuat, SMOOTHING);
+        }
+        if (hasPose && armsOk) {
+          applyArms();
+        }
+        if (fingersOk) {
+          // Always run while tracking: when a hand isn't seen its curl target is
+          // 0, so fingers smoothly relax open instead of freezing.
+          applyFingers();
+        }
+        // Drive the mouth from the webcam ONLY while the avatar isn't speaking
+        // (TTS lip-sync owns the mouth then). We WRITE the value every frame,
+        // including down to 0, so the mouth closes as you close yours.
+        if (hasFace && mouthOk && !head.isSpeaking) {
+          mouthCur += (mouthTarget - mouthCur) * MOUTH_SMOOTHING;
+          for (const fm of mouthMorphs) {
+            fm.infl[fm.idx] = fm.key === "jawOpen" ? mouthCur : mouthCur * 0.6;
+          }
+        }
+        // Blink together with the user. Written every frame (including back to 0)
+        // so the eyes reopen; this overrides the avatar's idle auto-blink.
+        if (hasFace && blinkOk) {
+          blinkCurL += (blinkTargetL - blinkCurL) * BLINK_SMOOTHING;
+          blinkCurR += (blinkTargetR - blinkCurR) * BLINK_SMOOTHING;
+          for (const e of eyeMorphs.eyeBlinkLeft) e.infl[e.idx] = blinkCurL;
+          for (const e of eyeMorphs.eyeBlinkRight) e.infl[e.idx] = blinkCurR;
+        }
       }
     } catch (err) {
       // Never let a tracking error freeze the avatar's rendering.
@@ -666,25 +722,40 @@ export async function startHeadTracking({ head, video, onStatus, onSynced, onDeb
   requestAnimationFrame(loop);
   say("Procurando seu rosto...");
 
+  // Tear down for real: restore the original render, release the camera and
+  // models. Called once, after the graceful release finishes (or via safety net).
+  function finish() {
+    if (!active) return;
+    active = false;
+    running = false;
+    window.removeEventListener("keydown", onKey);
+    head.render = originalRender; // restore original render
+    try {
+      stream.getTracks().forEach((t) => t.stop());
+    } catch {}
+    try {
+      faceLandmarker.close();
+    } catch {}
+    try {
+      poseLandmarker?.close();
+    } catch {}
+    try {
+      handLandmarker?.close();
+    } catch {}
+    if (video) video.srcObject = null;
+    say("");
+  }
+
   return {
     stop() {
+      if (!active || releasing) return;
+      // Freeze webcam targets and start easing bones back to rest; the patched
+      // render calls finish() once the ease completes. A timeout is the safety
+      // net in case the render loop is throttled (e.g. tab hidden).
       running = false;
-      window.removeEventListener("keydown", onKey);
-      head.render = originalRender; // restore original render
-      try {
-        stream.getTracks().forEach((t) => t.stop());
-      } catch {}
-      try {
-        faceLandmarker.close();
-      } catch {}
-      try {
-        poseLandmarker?.close();
-      } catch {}
-      try {
-        handLandmarker?.close();
-      } catch {}
-      if (video) video.srcObject = null;
-      say("");
+      releasing = true;
+      releaseFrames = 0;
+      setTimeout(finish, 1500);
     },
   };
 }
