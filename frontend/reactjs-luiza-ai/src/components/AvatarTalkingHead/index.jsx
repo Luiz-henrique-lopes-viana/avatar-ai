@@ -155,10 +155,14 @@ export const AvatarTalkingHead = forwardRef(({ message, playAudio }, ref) => {
           url: AVATAR_URL,
           body: AVATAR_BODY,
           avatarMood: "neutral",
-          ttsLang: "es-ES",
-          ttsVoice: "es-ES-Standard-F",
+          // Áudio 100% em português do Brasil. O `lipsyncLang: "es"` NÃO é
+          // áudio — é só o conjunto de regras de visemas (movimento dos
+          // lábios); a lib não tem módulo pt, então usamos o "es" como
+          // aproximação cosmética. A voz e o idioma falado são pt-BR.
+          ttsLang: "pt-BR",
+          ttsVoice: "pt-BR-Neural2-C",
           lipsyncLang: "es",
-          ttsRate: 0.85,
+          ttsRate: 0.95,
           // Cabeça ESTÁTICA enquanto fala (0) e movimento natural quando
           // parada (0.5). O state machine da TalkingHead alterna sozinho
           // entre "speaking" e "idle" ao começar/terminar a fala.

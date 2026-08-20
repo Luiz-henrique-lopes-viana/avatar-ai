@@ -4839,11 +4839,16 @@ class TalkingHead {
       if (isEndOfWord || isEndOfSentence || isLast) {
         // Add to text-to-speech sentence
         if (textWord.length) {
+          // O TTS recebe a palavra ORIGINAL (com acento/ç) para a pronúncia em
+          // pt-BR sair correta ("começo", não "comeco"). O pré-processamento do
+          // módulo de lip-sync (que remove diacríticos p/ o espanhol) é usado só
+          // para gerar os visemas abaixo, não para o áudio.
+          const ttsWord = textWord;
           textWord = this.lipsyncPreProcessText(textWord, lipsyncLang);
           if (textWord.length) {
             ttsSentence.push({
               mark: markId,
-              word: textWord,
+              word: ttsWord,
             });
           }
         }
