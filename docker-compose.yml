@@ -1,21 +1,10 @@
-version: '3.9'
+version: "3.9"
 
 services:
   frontend:
     build:
-      context: ./frontend/reactjs-rama-judicial
+      context: ./frontend/reactjs-luiza-ai
     ports:
       - "5173:5173"
-    depends_on:
-      - backend
     env_file:
-      - ./frontend/reactjs-rama-judicial/.env.example
-
-
-  backend:
-    build:
-      context: ./backend/nestjs-rama-judicial-back
-    ports:
-      - "8080:8080"
-    env_file:
-      - ./backend/nestjs-rama-judicial-back/.env.example
+      - ./frontend/reactjs-luiza-ai/.env.local

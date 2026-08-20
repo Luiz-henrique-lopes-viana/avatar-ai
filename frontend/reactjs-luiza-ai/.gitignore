@@ -23,6 +23,8 @@ dist-ssr
 *.sln
 *.sw?
 
-# Local env files (may contain secrets)
-.env.local
-.env.*.local
+# Env files (may contain secrets) — never commit these. Use .env.example as
+# the (secret-free) template.
+.env
+.env.*
+!.env.example

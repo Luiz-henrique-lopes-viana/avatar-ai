@@ -1,13 +1,6 @@
 import clsx from "clsx";
 import { useEffect, useRef, useState } from "react";
-import {
-  AiFillDislike,
-  AiFillLike,
-  AiOutlineDislike,
-  AiOutlineLike,
-} from "react-icons/ai";
 import { PulseLoader } from "react-spinners";
-import { postMessageFeedBack, useChatMessage } from "../../api/chat";
 import { chat as localChat, initLocalAI, isWebGPUAvailable } from "../../api/localAI";
 import { useConversaMode } from "../../store/useConversaMode";
 import { AvatarTalkingHead } from "../AvatarTalkingHead";
@@ -23,15 +16,11 @@ export const ChatBot = () => {
   const inputRef = useRef(null);
   const chatContainerRef = useRef(null);
   const avatarRef = useRef(null);
-  const [inputRequest, setInputRequest] = useState("");
-  const { chat, isLoadingChat, sessionId } = useChatMessage({
-    text: inputRequest,
-  });
 
-  // "Modo conversa": local WebLLM AI (keyless, in-browser). When on, replies
-  // are generated locally and spoken by the avatar instead of hitting the
-  // backend. Mutually exclusive with the webcam toggle (via the store).
-  const conversaOn = useConversaMode((s) => s.conversaOn);
+  // The whole "brain" is a local, keyless WebLLM model running in the browser
+  // (WebGPU). There is no backend: every reply is generated on the user's
+  // machine and nothing ever leaves it.
+  const conversaOn = useConversaMode((s) => s.conversaOn); // voz ligada?
   const setConversa = useConversaMode((s) => s.setConversa);
   const [modelLoading, setModelLoading] = useState(false);
   const [modelReady, setModelReady] = useState(false);
@@ -45,83 +34,19 @@ export const ChatBot = () => {
   const [isRecording, setIsRecording] = useState(false);
   const recognitionRef = useRef(null);
 
-  const [isSendingFeedback, setIsSendingFeedback] = useState(false);
-
-  const [feedbackInputs, setFeedbackInputs] = useState({});
-  const [feedbackStatus, setFeedbackStatus] = useState({});
-
-  const handleSendMessage = async () => {
-    const message = inputRef.current.value;
-    if (!message.trim()) return;
-
-    const newUserMessage = {
-      sender: "user",
-      sender_name: "Você",
-      text: message,
-    };
-
-    setChatWindow((prev) => [...prev, newUserMessage]);
-    inputRef.current.value = "";
-
-    // Modo conversa: generate + speak the reply locally (no backend).
-    if (conversaOn) {
-      if (!modelReady || isThinking) return;
-      const history = [
-        ...historyRef.current,
-        { role: "user", content: message },
-      ];
-      historyRef.current = history;
-      setIsThinking(true);
-      try {
-        const reply = await localChat(history);
-        historyRef.current = [
-          ...history,
-          { role: "assistant", content: reply },
-        ];
-        setChatWindow((prev) => [
-          ...prev,
-          { sender: "bot", sender_name: "Luiza", text: reply },
-        ]);
-        avatarRef.current?.speak(reply);
-      } catch (err) {
-        console.error("Erro na IA local:", err);
-        setChatWindow((prev) => [
-          ...prev,
-          {
-            sender: "bot",
-            sender_name: "Luiza",
-            text: "Desculpe, tive um problema ao gerar a resposta.",
-          },
-        ]);
-      } finally {
-        setIsThinking(false);
-      }
-      return;
-    }
-
-    // Backend mode (default, unchanged).
-    setInputRequest(message);
-  };
-
-  // Keep a live reference so voice recognition (set up once) can auto-send.
-  sendRef.current = handleSendMessage;
-
-  const toggleConversa = async () => {
-    if (modelLoading) return;
-    if (conversaOn) {
-      setConversa(false);
-      avatarRef.current?.stop();
-      return;
-    }
+  // Lazily download + start the in-browser model. Returns true when it's ready
+  // to answer, false (with a friendly message) when WebGPU is missing or the
+  // download failed.
+  const ensureModel = async () => {
+    if (modelReady) return true;
     const ok = await isWebGPUAvailable();
     if (!ok) {
       setAiError(
-        "Seu navegador não tem WebGPU. Use o Chrome ou o Edge atualizados para o Modo conversa."
+        "Seu navegador não tem WebGPU. Use o Chrome ou o Edge atualizados para conversar com a Luiza."
       );
-      return;
+      return false;
     }
     setAiError("");
-    setConversa(true);
     setModelLoading(true);
     try {
       await initLocalAI((report) => {
@@ -130,13 +55,71 @@ export const ChatBot = () => {
       });
       setModelReady(true);
       setModelStatus("");
+      return true;
     } catch (err) {
       console.error("Falha ao iniciar a IA local:", err);
       setAiError(err?.message || "Erro ao carregar o modelo de IA.");
-      setConversa(false);
+      return false;
     } finally {
       setModelLoading(false);
     }
+  };
+
+  const handleSendMessage = async () => {
+    const message = inputRef.current.value;
+    if (!message.trim() || isThinking || modelLoading) return;
+
+    setChatWindow((prev) => [
+      ...prev,
+      { sender: "user", sender_name: "Você", text: message },
+    ]);
+    inputRef.current.value = "";
+
+    const ready = await ensureModel();
+    if (!ready) return;
+
+    const history = [...historyRef.current, { role: "user", content: message }];
+    historyRef.current = history;
+    setIsThinking(true);
+    try {
+      const reply = await localChat(history);
+      historyRef.current = [...history, { role: "assistant", content: reply }];
+      setChatWindow((prev) => [
+        ...prev,
+        { sender: "bot", sender_name: "Luiza", text: reply },
+      ]);
+      // Fala em voz alta só quando a voz está ligada.
+      if (conversaOn) avatarRef.current?.speak(reply);
+    } catch (err) {
+      console.error("Erro na IA local:", err);
+      setChatWindow((prev) => [
+        ...prev,
+        {
+          sender: "bot",
+          sender_name: "Luiza",
+          text: "Desculpe, tive um problema ao gerar a resposta.",
+        },
+      ]);
+    } finally {
+      setIsThinking(false);
+    }
+  };
+
+  // Keep a live reference so voice recognition (set up once) can auto-send.
+  sendRef.current = handleSendMessage;
+
+  // "Ativar voz": liga/desliga a fala da avatar. Ao ligar, já pré-carrega o
+  // modelo para a primeira resposta sair falando sem espera.
+  const toggleConversa = async () => {
+    if (modelLoading) return;
+    if (conversaOn) {
+      setConversa(false);
+      avatarRef.current?.stop();
+      return;
+    }
+    setConversa(true);
+    const ok = await ensureModel();
+    if (!ok) setConversa(false);
   };
 
   const handleKeyPress = (event) => {
@@ -147,23 +130,11 @@ export const ChatBot = () => {
   };
 
   useEffect(() => {
-    if (!isLoadingChat && chat?.text) {
-      const newBotMessage = {
-        sender: "bot",
-        sender_name: "Luiza",
-        text: chat.text,
-        responseId: chat.responseId,
-      };
-      setChatWindow((prev) => [...prev, newBotMessage]);
-    }
-  }, [chat]);
-
-  useEffect(() => {
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTop =
         chatContainerRef.current.scrollHeight;
     }
-  }, [chatWindow, isLoadingChat]);
+  }, [chatWindow, isThinking]);
 
   useEffect(() => {
     if ("webkitSpeechRecognition" in window || "SpeechRecognition" in window) {
@@ -178,10 +149,8 @@ export const ChatBot = () => {
         const transcript = event.results[0][0].transcript;
         inputRef.current.value = transcript;
         setIsRecording(false);
-        // In Modo conversa, speaking a message sends it right away.
-        if (useConversaMode.getState().conversaOn) {
-          sendRef.current?.();
-        }
+        // Falar uma mensagem já a envia.
+        sendRef.current?.();
       };
 
       recognition.onerror = (event) => {
@@ -192,7 +161,7 @@ export const ChatBot = () => {
       recognitionRef.current = recognition;
     } else {
       console.warn(
-        "La API SpeechRecognition no es compatible con este navegador."
+        "A API SpeechRecognition não é compatível com este navegador."
       );
     }
   }, []);
@@ -209,62 +178,6 @@ export const ChatBot = () => {
       recognitionRef.current.stop();
       setIsRecording(false);
     }
-  };
-
-  const handleSendFeedback = async (params) => {
-    await postMessageFeedBack(params);
-  };
-
-  const toggleFeedbackInput = (responseId) => {
-    setFeedbackInputs((prev) => ({
-      ...prev,
-      [responseId]: prev[responseId] === "" ? undefined : "",
-    }));
-  };
-
-  const submitFeedback = async (responseId) => {
-    if (feedbackInputs[responseId]?.trim()) {
-      setIsSendingFeedback((prev) => ({ ...prev, [responseId]: true }));
-      try {
-        await postMessageFeedBack({
-          rating: "THUMBS_DOWN",
-          ratingReason: {
-            feedback: feedbackInputs[responseId],
-          },
-          responseId,
-        });
-        setFeedbackInputs((prev) => ({
-          ...prev,
-          [responseId]: null,
-        }));
-        setFeedbackStatus((prev) => ({
-          ...prev,
-          [responseId]: { like: false, dislike: true, feedbackSubmitted: true },
-        }));
-      } finally {
-        setIsSendingFeedback((prev) => ({ ...prev, [responseId]: false }));
-      }
-    }
-  };
-
-  const handleLikeClick = async (responseId) => {
-    setFeedbackStatus((prev) => ({
-      ...prev,
-      [responseId]: { like: true, dislike: false },
-    }));
-  
-    setFeedbackInputs((prev) => ({
-      ...prev,
-      [responseId]: undefined,
-    }));
-  
-    await postMessageFeedBack({
-      rating: "THUMBS_UP",
-      ratingReason: {
-        feedback: "",
-      },
-      responseId: responseId,
-    });
   };
 
   return (
@@ -360,85 +273,9 @@ export const ChatBot = () => {
                   {message.sender_name}
                 </p>
                 <p>{message.text}</p>
-                {message.sender === "bot" && index !== 0 && (
-                  <div className="flex flex-col gap-2 mt-2">
-                    <div className="flex gap-2">
-                      {feedbackStatus[message.responseId]?.like ? (
-                        <button
-                          className="focus:outline-none cursor-default"
-                          disabled
-                        >
-                          <AiFillLike size={20} />
-                        </button>
-                      ) : (
-                        !feedbackStatus[message.responseId]?.dislike && (
-                          <button
-                            onClick={() => handleLikeClick(message.responseId)}
-                            className="focus:outline-none cursor-pointer"
-                          >
-                            <AiOutlineLike
-                              size={20}
-                              color={"bg-white"}
-                            />
-                          </button>
-                        )
-                      )}
-                      {feedbackStatus[message.responseId]?.dislike ? (
-                        <button
-                          className="focus:outline-none cursor-default"
-                          disabled
-                        >
-                          <AiFillDislike size={20} />
-                        </button>
-                      ) : (
-                        !feedbackStatus[message.responseId]?.like && (
-                          <button
-                            onClick={() =>
-                              toggleFeedbackInput(message.responseId)
-                            }
-                            className="focus:outline-none cursor-pointer"
-                          >
-                            <AiOutlineDislike
-                              size={20}
-                              color={"bg-white"}
-                            />
-                          </button>
-                        )
-                      )}
-                    </div>
-
-                    {feedbackInputs[message.responseId] !== undefined &&
-                      !feedbackStatus[message.responseId]
-                        ?.feedbackSubmitted && (
-                        <div className="mt-2">
-                          <input
-                            type="text"
-                            value={feedbackInputs[message.responseId] ?? ""}
-                            onChange={(e) =>
-                              setFeedbackInputs((prev) => ({
-                                ...prev,
-                                [message.responseId]: e.target.value,
-                              }))
-                            }
-                            placeholder="Escreva seus comentários..."
-                            className="w-full p-2 text-sm rounded-lg border border-gray-300 bg-white text-black"
-                          />
-                          <button
-                            onClick={() => submitFeedback(message.responseId)}
-                            className="mt-2 bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
-                            disabled={isSendingFeedback[message.responseId]}
-                          >
-                            {isSendingFeedback[message.responseId]
-                              ? "Enviando..."
-                              : "Enviar"}
-                          </button>
-                        </div>
-                      )}
-                  </div>
-                )}
               </div>
             ))}
-            {(isLoadingChat || isThinking) && (
+            {isThinking && (
               <div className="self-start bg-white/10 border border-white/10 rounded-2xl rounded-bl-sm px-3.5 py-2.5">
                 <PulseLoader color="#60a5fa" size={8} />
               </div>
@@ -452,16 +289,14 @@ export const ChatBot = () => {
             rows={1}
             className="flex-1 bg-white/10 rounded-xl border border-white/10 focus:border-[#3b82f6] outline-none text-white/90 placeholder-white/40 text-sm font-sans px-3 py-2 resize-none max-h-24 transition-colors"
             placeholder={
-              conversaOn && !modelReady
-                ? "Carregando a IA..."
-                : "Escreva sua mensagem..."
+              modelLoading ? "Carregando a IA..." : "Escreva sua mensagem..."
             }
             onKeyDown={handleKeyPress}
           ></textarea>
           <button
             onClick={handleSendMessage}
             className="shrink-0 bg-gradient-to-br from-[#3b82f6] to-[#2563eb] hover:from-[#2563eb] hover:to-[#1d4ed8] text-white p-2.5 rounded-xl transition-all shadow-md disabled:from-gray-500 disabled:to-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
-            disabled={isLoadingChat || isThinking || (conversaOn && !modelReady)}
+            disabled={isThinking || modelLoading}
             aria-label="Enviar mensagem"
           >
             <svg
@@ -488,7 +323,7 @@ export const ChatBot = () => {
                 : "bg-white/10 hover:bg-white/20 border border-white/10"
             )}
             aria-label={isRecording ? "Parar gravação" : "Iniciar gravação"}
-            disabled={isLoadingChat || isThinking || (conversaOn && !modelReady)}
+            disabled={isThinking || modelLoading}
           >
             <img src={"/assets/mic.svg"} alt="Microfone" className="w-5 h-5" />
           </button>
@@ -501,11 +336,7 @@ export const ChatBot = () => {
           </div>
         )}
       </div>
-      <AvatarTalkingHead
-        ref={avatarRef}
-        message={conversaOn ? "" : chat?.text || ""}
-        playAudio={conversaOn}
-      />
+      <AvatarTalkingHead ref={avatarRef} playAudio={conversaOn} />
     </div>
   );
 };
