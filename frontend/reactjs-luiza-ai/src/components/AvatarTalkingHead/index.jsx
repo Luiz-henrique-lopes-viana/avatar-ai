@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { startHeadTracking } from "./headTracking";
+import { startWebcamBackground } from "./webcamBackground";
 import { useConversaMode } from "../../store/useConversaMode";
 
 const loadModules = async () => {
@@ -32,7 +33,9 @@ const AVATAR_URL =
 export const AvatarTalkingHead = forwardRef(({ message, playAudio }, ref) => {
   const avatarRef = useRef(null);
   const videoRef = useRef(null);
+  const canvasRef = useRef(null);
   const trackerRef = useRef(null);
+  const bgTrackerRef = useRef(null);
   const headRef = useRef(null);
   const [headInstance, setHeadInstance] = useState(null);
   // camOn is shared state: turning on "Modo conversa" (in the chat) flips it
@@ -66,6 +69,16 @@ export const AvatarTalkingHead = forwardRef(({ message, playAudio }, ref) => {
         },
         onDebug: setCamDebug,
       });
+      // Fundo desfocado (recorta você e borra o cenário atrás). Best-effort:
+      // se a segmentação não iniciar, a prévia crua da webcam continua valendo.
+      try {
+        bgTrackerRef.current = await startWebcamBackground({
+          video: videoRef.current,
+          canvas: canvasRef.current,
+        });
+      } catch (bgErr) {
+        console.warn("Fundo da webcam indisponível:", bgErr?.message || bgErr);
+      }
     } catch (err) {
       console.error("Head tracking failed:", err);
       setCamStatus("Erro ao acessar a câmera: " + (err?.message || err));
@@ -80,6 +93,10 @@ export const AvatarTalkingHead = forwardRef(({ message, playAudio }, ref) => {
     if (!camOn && trackerRef.current) {
       trackerRef.current.stop();
       trackerRef.current = null;
+      bgTrackerRef.current?.stop();
+      bgTrackerRef.current = null;
+      const c = canvasRef.current;
+      if (c) c.getContext("2d")?.clearRect(0, 0, c.width, c.height);
       setCamStatus("");
       setCamDebug(null);
       setCamLoading(false);
@@ -171,6 +188,8 @@ export const AvatarTalkingHead = forwardRef(({ message, playAudio }, ref) => {
       cancelled = true;
       trackerRef.current?.stop();
       trackerRef.current = null;
+      bgTrackerRef.current?.stop();
+      bgTrackerRef.current = null;
       try {
         headRef.current?.stop();
       } catch {}
@@ -198,12 +217,25 @@ export const AvatarTalkingHead = forwardRef(({ message, playAudio }, ref) => {
         style={styles.avatar}
       />
 
-      {/* Webcam preview used by the face tracker (mirrored, small corner) */}
+      {/* Webcam preview used by the face tracker (mirrored, small corner).
+          It stays the source frame for tracking; the canvas on top shows the
+          version with the background blurred (falls back to this raw video
+          if segmentation can't start). */}
       <video
         ref={videoRef}
         style={{ ...styles.video, display: camOn ? "block" : "none" }}
         muted
         playsInline
+      />
+
+      {/* Prévia com fundo desfocado (você recortado nítido, cenário borrado) */}
+      <canvas
+        ref={canvasRef}
+        style={{
+          ...styles.video,
+          zIndex: 1002,
+          display: camOn ? "block" : "none",
+        }}
       />
 
       <div
