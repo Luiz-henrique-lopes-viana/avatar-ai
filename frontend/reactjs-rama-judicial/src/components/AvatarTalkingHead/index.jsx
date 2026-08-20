@@ -1,5 +1,13 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { startHeadTracking } from "./headTracking";
+import { useConversaMode } from "../../store/useConversaMode";
 
 const loadModules = async () => {
   const { TalkingHead } = await import("./talkinghead/modules/talkinghead.mjs");
@@ -21,13 +29,16 @@ const AVATAR_URL =
     ? `https://models.readyplayer.me/${import.meta.env.VITE_AVATAR_ID}.glb?${RPM_PARAMS}`
     : "/models/6806bf365a7750626bb8c233.glb");
 
-export const AvatarTalkingHead = ({ message, playAudio }) => {
+export const AvatarTalkingHead = forwardRef(({ message, playAudio }, ref) => {
   const avatarRef = useRef(null);
   const videoRef = useRef(null);
   const trackerRef = useRef(null);
   const headRef = useRef(null);
   const [headInstance, setHeadInstance] = useState(null);
-  const [camOn, setCamOn] = useState(false);
+  // camOn is shared state: turning on "Modo conversa" (in the chat) flips it
+  // off, which stops the tracker via the effect below.
+  const camOn = useConversaMode((s) => s.camOn);
+  const setCam = useConversaMode((s) => s.setCam);
   const [camStatus, setCamStatus] = useState("");
   const [camLoading, setCamLoading] = useState(false);
   const [camSynced, setCamSynced] = useState(false);
@@ -36,12 +47,7 @@ export const AvatarTalkingHead = ({ message, playAudio }) => {
   const toggleCamera = async () => {
     if (camLoading) return; // ignore clicks while starting
     if (camOn) {
-      trackerRef.current?.stop();
-      trackerRef.current = null;
-      setCamOn(false);
-      setCamStatus("");
-      setCamSynced(false);
-      setCamDebug(null);
+      setCam(false); // the effect below tears down the tracker + resets UI
       return;
     }
     if (!headInstance) {
@@ -49,7 +55,7 @@ export const AvatarTalkingHead = ({ message, playAudio }) => {
       return;
     }
     try {
-      setCamOn(true);
+      setCam(true);
       setCamLoading(true);
       setCamSynced(false);
       setCamStatus("Carregando rastreamento...");
@@ -66,10 +72,45 @@ export const AvatarTalkingHead = ({ message, playAudio }) => {
     } catch (err) {
       console.error("Head tracking failed:", err);
       setCamStatus("Erro ao acessar a câmera: " + (err?.message || err));
-      setCamOn(false);
+      setCam(false);
       setCamLoading(false);
     }
   };
+
+  // Whenever camOn drops to false — whether from the toggle above or because
+  // "Modo conversa" was switched on elsewhere — stop the tracker and reset.
+  useEffect(() => {
+    if (!camOn && trackerRef.current) {
+      trackerRef.current.stop();
+      trackerRef.current = null;
+      setCamStatus("");
+      setCamSynced(false);
+      setCamDebug(null);
+      setCamLoading(false);
+    }
+  }, [camOn]);
+
+  // Imperative API used by the chat's "Modo conversa": speak a pt-BR reply.
+  // stopSpeaking() first so a new reply interrupts the queued one.
+  useImperativeHandle(
+    ref,
+    () => ({
+      speak: (text) => {
+        if (!headInstance || !text) return;
+        headInstance.stopSpeaking();
+        // pt-BR-Neural2-C = voz feminina neural (natural). lipsyncLang "es"
+        // é o que sincroniza a boca com os timepoints do áudio (fonema).
+        headInstance.speakText(text, {
+          ttsLang: "pt-BR",
+          ttsVoice: "pt-BR-Neural2-C",
+          lipsyncLang: "es",
+          ttsRate: 0.95,
+        });
+      },
+      stop: () => headInstance?.stopSpeaking(),
+    }),
+    [headInstance]
+  );
 
   const renderAvatar = async (isCancelled) => {
     try {
@@ -96,6 +137,11 @@ export const AvatarTalkingHead = ({ message, playAudio }) => {
           ttsVoice: "es-ES-Standard-F",
           lipsyncLang: "es",
           ttsRate: 0.85,
+          // Cabeça ESTÁTICA enquanto fala (0) e movimento natural quando
+          // parada (0.5). O state machine da TalkingHead alterna sozinho
+          // entre "speaking" e "idle" ao começar/terminar a fala.
+          avatarSpeakingHeadMove: 0,
+          avatarIdleHeadMove: 0.5,
         },
         (ev) => {
           if (ev.lengthComputable) {
@@ -202,7 +248,9 @@ export const AvatarTalkingHead = ({ message, playAudio }) => {
       <style>{"@keyframes spin{to{transform:rotate(360deg)}}"}</style>
     </div>
   );
-};
+});
+
+AvatarTalkingHead.displayName = "AvatarTalkingHead";
 
 const styles = {
   wrapper: {

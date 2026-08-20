@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.0.1",
+    "@mlc-ai/web-llm": "^0.2.84",
     "@paralleldrive/cuid2": "^2.2.2",
     "@react-three/drei": "9.75.0",
     "@react-three/fiber": "8.13.3",

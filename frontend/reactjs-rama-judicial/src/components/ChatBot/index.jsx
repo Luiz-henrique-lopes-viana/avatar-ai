@@ -8,6 +8,8 @@ import {
 } from "react-icons/ai";
 import { PulseLoader } from "react-spinners";
 import { postMessageFeedBack, useChatMessage } from "../../api/chat";
+import { chat as localChat, initLocalAI, isWebGPUAvailable } from "../../api/localAI";
+import { useConversaMode } from "../../store/useConversaMode";
 import { AvatarTalkingHead } from "../AvatarTalkingHead";
 
 export const ChatBot = () => {
@@ -15,16 +17,31 @@ export const ChatBot = () => {
     {
       sender: "bot",
       sender_name: "Luiza",
-      text: "¡Bienvenido! ¿Cómo puedo ayudarte?",
+      text: "Olá! Como posso ajudar você?",
     },
   ]);
   const inputRef = useRef(null);
   const chatContainerRef = useRef(null);
+  const avatarRef = useRef(null);
   const [inputRequest, setInputRequest] = useState("");
   const [playAudio, setPlayAudio] = useState(true);
   const { chat, isLoadingChat, sessionId } = useChatMessage({
     text: inputRequest,
   });
+
+  // "Modo conversa": local WebLLM AI (keyless, in-browser). When on, replies
+  // are generated locally and spoken by the avatar instead of hitting the
+  // backend. Mutually exclusive with the webcam toggle (via the store).
+  const conversaOn = useConversaMode((s) => s.conversaOn);
+  const setConversa = useConversaMode((s) => s.setConversa);
+  const [modelLoading, setModelLoading] = useState(false);
+  const [modelReady, setModelReady] = useState(false);
+  const [modelProgress, setModelProgress] = useState(0);
+  const [modelStatus, setModelStatus] = useState("");
+  const [aiError, setAiError] = useState("");
+  const [isThinking, setIsThinking] = useState(false);
+  const historyRef = useRef([]); // [{role, content}] context for WebLLM
+  const sendRef = useRef(null); // latest handleSendMessage, for voice auto-send
 
   const [isRecording, setIsRecording] = useState(false);
   const recognitionRef = useRef(null);
@@ -34,19 +51,93 @@ export const ChatBot = () => {
   const [feedbackInputs, setFeedbackInputs] = useState({});
   const [feedbackStatus, setFeedbackStatus] = useState({});
 
-  const handleSendMessage = () => {
+  const handleSendMessage = async () => {
     const message = inputRef.current.value;
     if (!message.trim()) return;
 
     const newUserMessage = {
       sender: "user",
-      sender_name: "Tú",
+      sender_name: "Você",
       text: message,
     };
 
     setChatWindow((prev) => [...prev, newUserMessage]);
-    setInputRequest(message);
     inputRef.current.value = "";
+
+    // Modo conversa: generate + speak the reply locally (no backend).
+    if (conversaOn) {
+      if (!modelReady || isThinking) return;
+      const history = [
+        ...historyRef.current,
+        { role: "user", content: message },
+      ];
+      historyRef.current = history;
+      setIsThinking(true);
+      try {
+        const reply = await localChat(history);
+        historyRef.current = [
+          ...history,
+          { role: "assistant", content: reply },
+        ];
+        setChatWindow((prev) => [
+          ...prev,
+          { sender: "bot", sender_name: "Luiza", text: reply },
+        ]);
+        if (playAudio) avatarRef.current?.speak(reply);
+      } catch (err) {
+        console.error("Erro na IA local:", err);
+        setChatWindow((prev) => [
+          ...prev,
+          {
+            sender: "bot",
+            sender_name: "Luiza",
+            text: "Desculpe, tive um problema ao gerar a resposta.",
+          },
+        ]);
+      } finally {
+        setIsThinking(false);
+      }
+      return;
+    }
+
+    // Backend mode (default, unchanged).
+    setInputRequest(message);
+  };
+
+  // Keep a live reference so voice recognition (set up once) can auto-send.
+  sendRef.current = handleSendMessage;
+
+  const toggleConversa = async () => {
+    if (modelLoading) return;
+    if (conversaOn) {
+      setConversa(false);
+      avatarRef.current?.stop();
+      return;
+    }
+    const ok = await isWebGPUAvailable();
+    if (!ok) {
+      setAiError(
+        "Seu navegador não tem WebGPU. Use o Chrome ou o Edge atualizados para o Modo conversa."
+      );
+      return;
+    }
+    setAiError("");
+    setConversa(true);
+    setModelLoading(true);
+    try {
+      await initLocalAI((report) => {
+        setModelProgress(report?.progress || 0);
+        setModelStatus(report?.text || "");
+      });
+      setModelReady(true);
+      setModelStatus("");
+    } catch (err) {
+      console.error("Falha ao iniciar a IA local:", err);
+      setAiError(err?.message || "Erro ao carregar o modelo de IA.");
+      setConversa(false);
+    } finally {
+      setModelLoading(false);
+    }
   };
 
   const handleKeyPress = (event) => {
@@ -80,17 +171,22 @@ export const ChatBot = () => {
       const SpeechRecognition =
         window.SpeechRecognition || window.webkitSpeechRecognition;
       const recognition = new SpeechRecognition();
-      recognition.lang = "es-ES";
+      recognition.lang = "pt-BR";
       recognition.interimResults = false;
       recognition.maxAlternatives = 1;
 
       recognition.onresult = (event) => {
         const transcript = event.results[0][0].transcript;
         inputRef.current.value = transcript;
+        setIsRecording(false);
+        // In Modo conversa, speaking a message sends it right away.
+        if (useConversaMode.getState().conversaOn) {
+          sendRef.current?.();
+        }
       };
 
       recognition.onerror = (event) => {
-        console.error("Error en el reconocimiento de voz:", event.error);
+        console.error("Erro no reconhecimento de voz:", event.error);
         setIsRecording(false);
       };
 
@@ -188,21 +284,63 @@ export const ChatBot = () => {
               className="w-full h-full object-cover"
             />
           </div>
-          <div className="w-full flex flex-row justify-between">
-            <p className="text-lg font-bold font-sans">Luiza AI</p>
+          <div className="w-full flex flex-col gap-1">
+            <div className="flex flex-row justify-between items-center">
+              <p className="text-lg font-bold font-sans">Luiza AI</p>
+              <button
+                onClick={() => {
+                  setPlayAudio((prev) => !prev);
+                }}
+                className={clsx(
+                  "text-xs px-2 py-1 rounded font-medium transition-colors",
+                  playAudio
+                    ? "bg-green-600 hover:bg-green-700 text-white"
+                    : "bg-gray-500 hover:bg-gray-600 text-white"
+                )}
+              >
+                {playAudio ? "Voz ON " : "Voz OFF"}
+              </button>
+            </div>
             <button
-              onClick={() => {
-                setPlayAudio((prev) => !prev);
-              }}
+              onClick={toggleConversa}
+              disabled={modelLoading}
               className={clsx(
-                "text-xs px-2 py-1 rounded font-medium transition-colors",
-                playAudio
-                  ? "bg-green-600 hover:bg-green-700 text-white"
-                  : "bg-gray-500 hover:bg-gray-600 text-white"
+                "text-xs px-2 py-1 rounded font-medium transition-colors self-start flex items-center gap-1.5 disabled:opacity-70 disabled:cursor-wait",
+                conversaOn
+                  ? "bg-[#248a52] hover:bg-[#1d7745] text-white"
+                  : "bg-gray-600 hover:bg-gray-700 text-white"
               )}
             >
-              {playAudio ? "Voz ON " : "Voz OFF"}
+              <span
+                className={clsx(
+                  "inline-block w-2 h-2 rounded-full",
+                  conversaOn ? "bg-green-300" : "bg-white/40"
+                )}
+              />
+              {modelLoading
+                ? `Carregando IA ${Math.round(modelProgress * 100)}%`
+                : conversaOn
+                ? "Modo conversa ON"
+                : "Modo conversa"}
             </button>
+            {modelLoading && (
+              <div className="w-full h-1 bg-white/20 rounded overflow-hidden">
+                <div
+                  className="h-full bg-green-400 transition-all"
+                  style={{ width: `${Math.round(modelProgress * 100)}%` }}
+                />
+              </div>
+            )}
+            {modelLoading && modelStatus && (
+              <span className="text-[10px] text-white/60 leading-tight truncate">
+                {modelStatus}
+              </span>
+            )}
+            {aiError && (
+              <span className="text-[10px] text-red-300 leading-tight">
+                {aiError}
+              </span>
+            )}
           </div>
         </div>
 
@@ -286,7 +424,7 @@ export const ChatBot = () => {
                                 [message.responseId]: e.target.value,
                               }))
                             }
-                            placeholder="Escribe tus comentarios..."
+                            placeholder="Escreva seus comentários..."
                             className="w-full p-2 text-sm rounded-lg border border-gray-300 bg-white text-black"
                           />
                           <button
@@ -304,7 +442,7 @@ export const ChatBot = () => {
                 )}
               </div>
             ))}
-            {isLoadingChat && (
+            {(isLoadingChat || isThinking) && (
               <div>
                 <PulseLoader color="#fff" />
               </div>
@@ -316,13 +454,17 @@ export const ChatBot = () => {
           <textarea
             ref={inputRef}
             className="flex-1 bg-transparent border-none outline-none text-white/70 text-sm font-sans p-1 resize-none"
-            placeholder="Escribe tu mensaje..."
+            placeholder={
+              conversaOn && !modelReady
+                ? "Carregando a IA..."
+                : "Escreva sua mensagem..."
+            }
             onKeyDown={handleKeyPress}
           ></textarea>
           <button
             onClick={handleSendMessage}
             className="ml-2 bg-[#248a52] hover:bg-[#1d7745] text-white text-sm p-2 px-3 rounded-lg transition-colors disabled:bg-gray-500 disabled:opacity-50 disabled:cursor-not-allowed"
-            disabled={isLoadingChat}
+            disabled={isLoadingChat || isThinking || (conversaOn && !modelReady)}
           >
             Enviar
           </button>
@@ -339,13 +481,13 @@ export const ChatBot = () => {
                 "p-2 bg-[#248a52] hover:bg-[#1d7745] rounded-lg transition-colors flex items-center justify-center disabled:bg-gray-500 disabled:opacity-50 disabled:cursor-not-allowed",
                 isRecording && "bg-red-600 hover:bg-red-700"
               )}
-              aria-label={isRecording ? "Parar grabación" : "Iniciar grabación"}
-              disabled={isLoadingChat}
+              aria-label={isRecording ? "Parar gravação" : "Iniciar gravação"}
+              disabled={isLoadingChat || isThinking || (conversaOn && !modelReady)}
             >
               <div>
                 <img
                   src={"/assets/mic.svg"}
-                  alt="Micrófono"
+                  alt="Microfone"
                   className="w-5 h-5"
                   style={{ width: "31px" }}
                 />
@@ -356,13 +498,14 @@ export const ChatBot = () => {
         {isRecording && (
           <div className="flex w-full justify-end mb-1 pr-4">
             <span className=" text-xs text-gray-300  animate-pulse  text-right">
-              Grabando mensage...
+              Gravando mensagem...
             </span>
           </div>
         )}
       </div>
       <AvatarTalkingHead
-        message={chat?.text || ""}
+        ref={avatarRef}
+        message={conversaOn ? "" : chat?.text || ""}
         playAudio={playAudio}
       />
     </div>
