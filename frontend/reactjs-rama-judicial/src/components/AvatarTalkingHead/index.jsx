@@ -41,7 +41,6 @@ export const AvatarTalkingHead = forwardRef(({ message, playAudio }, ref) => {
   const setCam = useConversaMode((s) => s.setCam);
   const [camStatus, setCamStatus] = useState("");
   const [camLoading, setCamLoading] = useState(false);
-  const [camSynced, setCamSynced] = useState(false);
   const [camDebug, setCamDebug] = useState(null);
 
   const toggleCamera = async () => {
@@ -57,7 +56,6 @@ export const AvatarTalkingHead = forwardRef(({ message, playAudio }, ref) => {
     try {
       setCam(true);
       setCamLoading(true);
-      setCamSynced(false);
       setCamStatus("Carregando rastreamento...");
       trackerRef.current = await startHeadTracking({
         head: headInstance,
@@ -65,7 +63,6 @@ export const AvatarTalkingHead = forwardRef(({ message, playAudio }, ref) => {
         onStatus: setCamStatus,
         onSynced: () => {
           setCamLoading(false);
-          setCamSynced(true);
         },
         onDebug: setCamDebug,
       });
@@ -84,7 +81,6 @@ export const AvatarTalkingHead = forwardRef(({ message, playAudio }, ref) => {
       trackerRef.current.stop();
       trackerRef.current = null;
       setCamStatus("");
-      setCamSynced(false);
       setCamDebug(null);
       setCamLoading(false);
     }
@@ -210,31 +206,65 @@ export const AvatarTalkingHead = forwardRef(({ message, playAudio }, ref) => {
         playsInline
       />
 
-      <div style={styles.camPanel}>
+      <div
+        style={{
+          ...styles.camPanel,
+          borderColor: camOn
+            ? "rgba(36,138,82,0.55)"
+            : "rgba(255,255,255,0.12)",
+          boxShadow: camOn
+            ? "0 8px 28px rgba(0,0,0,0.45), 0 0 0 1px rgba(36,138,82,0.25)"
+            : "0 8px 28px rgba(0,0,0,0.45)",
+        }}
+      >
         <div
           style={{ ...styles.camRow, cursor: camLoading ? "wait" : "pointer" }}
           onClick={toggleCamera}
         >
           <span
             style={{
-              ...styles.switch,
-              background: camOn ? "#248a52" : "rgba(255,255,255,0.25)",
+              ...styles.camIcon,
+              background: camOn
+                ? "linear-gradient(135deg,#248a52,#37d67a)"
+                : "rgba(255,255,255,0.10)",
             }}
           >
+            🎥
+          </span>
+
+          <div style={styles.camTexts}>
+            <span style={styles.camLabel}>Copiar meus movimentos</span>
+            <span style={styles.camHint}>
+              {camLoading
+                ? "Iniciando câmera…"
+                : camStatus ||
+                  (camOn
+                    ? "Rastreando você em tempo real"
+                    : "Ative para a Luiza imitar você")}
+            </span>
+          </div>
+
+          {camLoading ? (
+            <span style={styles.spinner} />
+          ) : (
             <span
               style={{
-                ...styles.switchKnob,
-                transform: camOn ? "translateX(20px)" : "translateX(0px)",
+                ...styles.switch,
+                background: camOn
+                  ? "linear-gradient(135deg,#248a52,#37d67a)"
+                  : "rgba(255,255,255,0.22)",
               }}
-            />
-          </span>
-          <span style={styles.camLabel}>🎥 Copiar meus movimentos</span>
-          {camLoading && <span style={styles.spinner} />}
-          {camSynced && !camLoading && <span style={styles.dotOk} />}
+            >
+              <span
+                style={{
+                  ...styles.switchKnob,
+                  transform: camOn ? "translateX(20px)" : "translateX(0px)",
+                }}
+              />
+            </span>
+          )}
         </div>
-        <span style={styles.camHint}>
-          {camStatus || (camOn ? "" : "Desativado — avatar no modo natural")}
-        </span>
+
         {camOn && camDebug && (
           <span style={styles.camDebug}>
             frames {camDebug.frames} · rosto {camDebug.hasFace ? "sim" : "não"} ·
@@ -284,26 +314,50 @@ const styles = {
     zIndex: 1001,
     pointerEvents: "none",
   },
+  // Card do rastreamento por câmera — alinhado à direita, na mesma coluna
+  // do chat (right: 20, width: 300), combinando com o visual dele.
   camPanel: {
     position: "absolute",
-    top: 70,
-    left: 20,
+    top: 20,
+    right: 20,
+    width: 300,
+    boxSizing: "border-box",
     display: "flex",
     flexDirection: "column",
-    gap: 6,
-    padding: "12px 14px",
-    background: "rgba(0,0,0,0.55)",
-    borderRadius: 12,
-    backdropFilter: "blur(4px)",
-    boxShadow: "0 2px 8px rgba(0,0,0,0.35)",
+    gap: 8,
+    padding: "14px 16px",
+    background: "rgba(0,0,0,0.8)",
+    border: "1px solid rgba(255,255,255,0.12)",
+    borderRadius: 16,
+    backdropFilter: "blur(10px)",
+    boxShadow: "0 8px 28px rgba(0,0,0,0.45)",
+    transition: "border-color 0.2s ease, box-shadow 0.2s ease",
     zIndex: 1001,
   },
   camRow: {
     display: "flex",
     alignItems: "center",
-    gap: 10,
+    gap: 12,
     cursor: "pointer",
     userSelect: "none",
+  },
+  camIcon: {
+    width: 38,
+    height: 38,
+    flexShrink: 0,
+    borderRadius: 12,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 18,
+    transition: "background 0.2s ease",
+  },
+  camTexts: {
+    flex: 1,
+    minWidth: 0,
+    display: "flex",
+    flexDirection: "column",
+    gap: 2,
   },
   switch: {
     position: "relative",
@@ -327,33 +381,28 @@ const styles = {
   },
   camLabel: {
     fontSize: 14,
-    fontWeight: 600,
+    fontWeight: 700,
+    lineHeight: 1.2,
   },
   camHint: {
-    fontSize: 12,
-    opacity: 0.85,
-    minHeight: 15,
+    fontSize: 11.5,
+    opacity: 0.7,
+    lineHeight: 1.3,
   },
   camDebug: {
     fontSize: 11,
-    opacity: 0.6,
+    opacity: 0.55,
     fontFamily: "monospace",
+    borderTop: "1px solid rgba(255,255,255,0.1)",
+    paddingTop: 8,
   },
   spinner: {
-    width: 14,
-    height: 14,
+    width: 20,
+    height: 20,
     borderRadius: "50%",
-    border: "2px solid rgba(255,255,255,0.35)",
-    borderTopColor: "#fff",
+    border: "2px solid rgba(255,255,255,0.25)",
+    borderTopColor: "#37d67a",
     animation: "spin 0.8s linear infinite",
-    flexShrink: 0,
-  },
-  dotOk: {
-    width: 10,
-    height: 10,
-    borderRadius: "50%",
-    background: "#37d67a",
-    boxShadow: "0 0 6px #37d67a",
     flexShrink: 0,
   },
 };

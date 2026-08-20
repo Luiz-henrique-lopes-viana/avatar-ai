@@ -1,4 +1,4 @@
-🧑‍⚖️ Avatar AI - Rama Judicial
+🧑‍⚖️ Avatar AI - LUIZA AI
 Este projeto é um chatbot inteligente com avatar animado, desenvolvido para auxiliar usuários em demandas do sistema judicial. Ele utiliza inteligência artificial para conversação, reconhecimento de voz e feedback do usuário, proporcionando uma experiência interativa e moderna.
 Tecnologias Utilizadas
 •	ReactJS (frontend)

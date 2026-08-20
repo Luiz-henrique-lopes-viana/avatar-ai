@@ -24,7 +24,6 @@ export const ChatBot = () => {
   const chatContainerRef = useRef(null);
   const avatarRef = useRef(null);
   const [inputRequest, setInputRequest] = useState("");
-  const [playAudio, setPlayAudio] = useState(true);
   const { chat, isLoadingChat, sessionId } = useChatMessage({
     text: inputRequest,
   });
@@ -83,7 +82,7 @@ export const ChatBot = () => {
           ...prev,
           { sender: "bot", sender_name: "Luiza", text: reply },
         ]);
-        if (playAudio) avatarRef.current?.speak(reply);
+        avatarRef.current?.speak(reply);
       } catch (err) {
         console.error("Erro na IA local:", err);
         setChatWindow((prev) => [
@@ -285,22 +284,7 @@ export const ChatBot = () => {
             />
           </div>
           <div className="w-full flex flex-col gap-1">
-            <div className="flex flex-row justify-between items-center">
-              <p className="text-lg font-bold font-sans">Luiza AI</p>
-              <button
-                onClick={() => {
-                  setPlayAudio((prev) => !prev);
-                }}
-                className={clsx(
-                  "text-xs px-2 py-1 rounded font-medium transition-colors",
-                  playAudio
-                    ? "bg-green-600 hover:bg-green-700 text-white"
-                    : "bg-gray-500 hover:bg-gray-600 text-white"
-                )}
-              >
-                {playAudio ? "Voz ON " : "Voz OFF"}
-              </button>
-            </div>
+            <p className="text-lg font-bold font-sans">Luiza AI</p>
             <button
               onClick={toggleConversa}
               disabled={modelLoading}
@@ -320,8 +304,8 @@ export const ChatBot = () => {
               {modelLoading
                 ? `Carregando IA ${Math.round(modelProgress * 100)}%`
                 : conversaOn
-                ? "Modo conversa ON"
-                : "Modo conversa"}
+                ? "🔊 Falando"
+                : "🔊 Ativar voz"}
             </button>
             {modelLoading && (
               <div className="w-full h-1 bg-white/20 rounded overflow-hidden">
@@ -506,7 +490,7 @@ export const ChatBot = () => {
       <AvatarTalkingHead
         ref={avatarRef}
         message={conversaOn ? "" : chat?.text || ""}
-        playAudio={playAudio}
+        playAudio={conversaOn}
       />
     </div>
   );
