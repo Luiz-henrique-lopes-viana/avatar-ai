@@ -7,4 +7,4 @@ services:
     ports:
       - "5173:5173"
     env_file:
-      - ./frontend/reactjs-luiza-ai/.env.local
+      - ./frontend/reactjs-luiza-ai/.env.example
